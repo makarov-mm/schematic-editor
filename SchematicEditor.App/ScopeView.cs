@@ -5,8 +5,12 @@ using System.Windows.Media;
 namespace SchematicEditor.App;
 
 /// <summary>
-/// Rolling oscilloscope for canvas probes. Autoscaled vertically (1-2-5 ladder),
-/// fixed time window, decimated to roughly one point per pixel while drawing.
+/// Rolling oscilloscope for canvas probes. The vertical scale follows the
+/// actual [min..max] of the visible window (not a symmetric ±peak), so
+/// DC-offset signals like a rectifier rail fill the screen and their ripple
+/// is visible. Gridlines land on a 1-2-5 ladder; the zero axis is drawn
+/// whenever it falls inside the window. Traces decimate to roughly one
+/// point per pixel.
 /// </summary>
 public sealed class ScopeView : FrameworkElement
 {
@@ -16,9 +20,11 @@ public sealed class ScopeView : FrameworkElement
 
     private static readonly Brush Bg = Frozen(Color.FromRgb(0x12, 0x16, 0x1C));
     private static readonly Pen GridPen = FrozenPen(Color.FromRgb(0x26, 0x2E, 0x38), 1);
-    private static readonly Pen AxisPen = FrozenPen(Color.FromRgb(0x3A, 0x45, 0x52), 1);
+    private static readonly Pen AxisPen = FrozenPen(Color.FromRgb(0x4A, 0x57, 0x66), 1);
     private static readonly Brush TextBrush = Frozen(Color.FromRgb(0x9A, 0xA5, 0xB4));
     private static readonly Typeface Mono = new("Consolas");
+
+    private const double MarginY = 8;
 
     private static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
 
@@ -43,40 +49,70 @@ public sealed class ScopeView : FrameworkElement
 
         dc.DrawRectangle(Bg, null, new Rect(0, 0, w, h));
 
-        // Graticule: 10 x 6 divisions.
+        // Time graticule: 10 divisions.
         for (int i = 1; i < 10; i++)
             dc.DrawLine(GridPen, new Point(w * i / 10, 0), new Point(w * i / 10, h));
-        for (int i = 1; i < 6; i++)
-            dc.DrawLine(GridPen, new Point(0, h * i / 6), new Point(w, h * i / 6));
-        dc.DrawLine(AxisPen, new Point(0, h / 2), new Point(w, h / 2));
 
         var probes = _canvas?.Probes;
         if (_canvas is null || probes is null || probes.Count == 0)
         {
+            for (int i = 1; i < 6; i++)
+                dc.DrawLine(GridPen, new Point(0, h * i / 6), new Point(w, h * i / 6));
             var hint = Text("Arm the probe tool and click a wire (voltage) or a component (current).", 12, TextBrush);
             dc.DrawText(hint, new Point((w - hint.Width) / 2, (h - hint.Height) / 2));
             return;
         }
 
         double tNow = _canvas.SimTime;
+        if (!_canvas.IsRunning)                                  // frozen after stop
+            foreach (var p in probes)
+                if (p.Times.Count > 0)
+                    tNow = Math.Max(tNow, p.Times[^1]);
         double t0 = tNow - WindowSeconds;
 
-        // Vertical autoscale over the visible window, 1-2-5 ladder.
-        double peak = 1e-6;
+        // Range of the visible window across all traces.
+        double vmin = double.MaxValue, vmax = double.MinValue;
         foreach (var p in probes)
         {
             var (times, values) = (p.Times, p.Values);
             for (int i = values.Count - 1; i >= 0; i--)
             {
                 if (times[i] < t0) break;
-                peak = Math.Max(peak, Math.Abs(values[i]));
+                double v = values[i];
+                if (v < vmin) vmin = v;
+                if (v > vmax) vmax = v;
             }
         }
-        double scale = NiceCeil(peak * 1.05);
+        if (vmin > vmax) { vmin = -1; vmax = 1; }               // no samples yet
 
+        // Pad, and never let the span collapse (flat DC trace).
+        double span = vmax - vmin;
+        double minSpan = Math.Max(1e-6, Math.Max(Math.Abs(vmax), Math.Abs(vmin)) * 0.02);
+        if (span < minSpan)
+        {
+            double mid = (vmin + vmax) / 2;
+            vmin = mid - minSpan / 2;
+            vmax = mid + minSpan / 2;
+            span = minSpan;
+        }
+        double lo = vmin - span * 0.07;
+        double hi = vmax + span * 0.07;
+
+        double Y(double v) => h - MarginY - (v - lo) / (hi - lo) * (h - 2 * MarginY);
         double X(double t) => (t - t0) / WindowSeconds * w;
-        double Y(double v) => h / 2 - v / scale * (h / 2 - 6);
 
+        // Value gridlines on a 1-2-5 ladder, labelled at the right edge.
+        double step = NiceCeil((hi - lo) / 6);
+        for (double v = Math.Ceiling(lo / step) * step; v <= hi + step * 1e-9; v += step)
+        {
+            double y = Y(v);
+            bool isZero = Math.Abs(v) < step * 1e-6;
+            dc.DrawLine(isZero ? AxisPen : GridPen, new Point(0, y), new Point(w, y));
+            var label = Text(FormatValue(v), 10, TextBrush);
+            dc.DrawText(label, new Point(w - label.Width - 4, y - label.Height - 1));
+        }
+
+        // Traces.
         foreach (var p in probes)
         {
             var (times, values) = (p.Times, p.Values);
@@ -120,17 +156,26 @@ public sealed class ScopeView : FrameworkElement
             ly += ft.Height + 2;
         }
 
-        // Scale captions.
-        var top = Text($"+{FormatScale(scale)}", 11, TextBrush);
-        dc.DrawText(top, new Point(w - top.Width - 6, 4));
-        var bottom = Text($"\u2212{FormatScale(scale)}", 11, TextBrush);
-        dc.DrawText(bottom, new Point(w - bottom.Width - 6, h - bottom.Height - 4));
+        // Time window caption.
         var win = Text(WindowSeconds >= 1 ? $"{WindowSeconds:0.#} s" : $"{WindowSeconds * 1000:0.#} ms", 11, TextBrush);
-        dc.DrawText(win, new Point(w - win.Width - 6, h / 2 - win.Height - 2));
+        dc.DrawText(win, new Point(w - win.Width - 4, h - win.Height - 2));
     }
 
-    private static string FormatScale(double s) =>
-        s >= 1 ? $"{s:0.##}" : s >= 1e-3 ? $"{s * 1e3:0.##}m" : $"{s * 1e6:0.##}\u00b5";
+    private static string FormatValue(double v)
+    {
+        double a = Math.Abs(v);
+        if (a < 1e-12) return "0";
+        (double m, string s) = a switch
+        {
+            >= 1e6 => (1e-6, "M"),
+            >= 1e3 => (1e-3, "k"),
+            >= 1 => (1.0, ""),
+            >= 1e-3 => (1e3, "m"),
+            >= 1e-6 => (1e6, "\u00b5"),
+            _ => (1e9, "n"),
+        };
+        return (v * m).ToString("0.###", CultureInfo.InvariantCulture) + s;
+    }
 
     private static double NiceCeil(double v)
     {
