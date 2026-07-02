@@ -1,0 +1,364 @@
+<Window x:Class="SchematicEditor.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:SchematicEditor.App"
+        Title="Schematic Editor" Width="1280" Height="800"
+        WindowStartupLocation="CenterScreen"
+        Background="#FAFAFC"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <!-- 16x16 icon geometries -->
+        <Geometry x:Key="IconNew">M4,1.5 H9.5 L12.5,4.5 V14.5 H4 Z M9.5,1.5 V4.5 H12.5</Geometry>
+        <Geometry x:Key="IconOpen">M1.5,4 H6 L7.5,6 H14.5 L13,12.5 H1.5 Z M1.5,4 V12.5</Geometry>
+        <Geometry x:Key="IconSave">M2.5,2.5 H11.5 L13.5,4.5 V13.5 H2.5 Z M5,2.5 V6.5 H10.5 V2.5 M4.5,13.5 V9.5 H11.5 V13.5</Geometry>
+        <Geometry x:Key="IconUndo">M4.5,6.5 H10 A3.25,3.25 0 0 1 10,13 H6.5 M4.5,6.5 L7.5,3.5 M4.5,6.5 L7.5,9.5</Geometry>
+        <Geometry x:Key="IconRedo">M11.5,6.5 H6 A3.25,3.25 0 0 0 6,13 H9.5 M11.5,6.5 L8.5,3.5 M11.5,6.5 L8.5,9.5</Geometry>
+        <Geometry x:Key="IconSelect">M4.5,2 L12,8.6 L8.6,9.1 L10.5,13.2 L8.8,14 L6.9,9.9 L4.5,12.3 Z</Geometry>
+        <Geometry x:Key="IconWire">M2.5,12.5 H8 V4.5 H13.5 M2.5,12.5 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0 M13.5,4.5 m-1.4,0 a1.4,1.4 0 1 0 2.8,0 a1.4,1.4 0 1 0 -2.8,0</Geometry>
+        <Geometry x:Key="IconNetlist">M5.5,4 H14 M5.5,8 H14 M5.5,12 H14 M2.5,4 m-1,0 a1,1 0 1 0 2,0 a1,1 0 1 0 -2,0 M2.5,8 m-1,0 a1,1 0 1 0 2,0 a1,1 0 1 0 -2,0 M2.5,12 m-1,0 a1,1 0 1 0 2,0 a1,1 0 1 0 -2,0</Geometry>
+        <Geometry x:Key="IconErc">M8,1.5 L14,3.5 V8 C14,11.5 11.5,13.8 8,15 C4.5,13.8 2,11.5 2,8 V3.5 Z M5.2,8.2 L7.2,10.2 L11,5.8</Geometry>
+        <Geometry x:Key="IconFit">M2,5.5 V2 H5.5 M10.5,2 H14 V5.5 M14,10.5 V14 H10.5 M5.5,14 H2 V10.5</Geometry>
+        <Geometry x:Key="IconRotate">M12.5,10.5 A5,5 0 1 1 11.2,4.2 M11.2,1.6 V4.4 H8.4</Geometry>
+        <Geometry x:Key="IconMirror">M8,1.5 V14.5 M6,4.5 L2,8 L6,11.5 Z M10,4.5 L14,8 L10,11.5 Z</Geometry>
+        <Geometry x:Key="IconPlay">M5,3 L13,8 L5,13 Z</Geometry>
+        <Geometry x:Key="IconStop">M4,4 H12 V12 H4 Z</Geometry>
+        <Geometry x:Key="IconReset">M12.8,5.2 A5.2,5.2 0 1 0 13.2,9.5 M13.4,2 L12.8,5.4 L9.4,4.8</Geometry>
+        <Geometry x:Key="IconProbe">M2.5,13.5 L10.2,5.8 M11.5,4.5 m-1.9,0 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0</Geometry>
+
+        <Style x:Key="IconPath" TargetType="Path">
+            <Setter Property="Stroke" Value="#3A4150"/>
+            <Setter Property="StrokeThickness" Value="1.5"/>
+            <Setter Property="StrokeLineJoin" Value="Round"/>
+            <Setter Property="StrokeStartLineCap" Value="Round"/>
+            <Setter Property="StrokeEndLineCap" Value="Round"/>
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Stretch" Value="None"/>
+        </Style>
+
+        <!-- Flat toolbar button -->
+        <Style x:Key="ToolButton" TargetType="Button">
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#3A4150"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E9EDF4"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#DCE2EE"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Flat toolbar toggle (tools) -->
+        <Style x:Key="ToolToggle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E9EDF4"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#DBE7FA"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#7FA8E8"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Small text button (export formats) -->
+        <Style x:Key="TextToolButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Width" Value="44"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style x:Key="BarSeparator" TargetType="Rectangle">
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Fill" Value="#E1E3E8"/>
+            <Setter Property="Margin" Value="6,0"/>
+        </Style>
+
+        <Style x:Key="ScopeToggle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#9AA5B4"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd" CornerRadius="3" Padding="8,3" Background="Transparent">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#232B36"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#2E3B4E"/>
+                                <Setter Property="Foreground" Value="#D7DEE8"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ScopeButton" TargetType="Button">
+            <Setter Property="Foreground" Value="#9AA5B4"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" CornerRadius="3" Padding="8,3" Background="Transparent">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#232B36"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PanelHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#7A8194"/>
+            <Setter Property="Margin" Value="12,10,12,6"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ============================================================ toolbar -->
+        <Border DockPanel.Dock="Top" Background="White"
+                BorderBrush="#E1E3E8" BorderThickness="0,0,0,1" Padding="8,5">
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource ToolButton}" Click="OnNew" ToolTip="New (Ctrl+N)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconNew}"/>
+                </Button>
+                <Button Style="{StaticResource ToolButton}" Click="OnOpen" ToolTip="Open… (Ctrl+O)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconOpen}"/>
+                </Button>
+                <Button Style="{StaticResource ToolButton}" Click="OnSave" ToolTip="Save… (Ctrl+S)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconSave}"/>
+                </Button>
+
+                <Rectangle Style="{StaticResource BarSeparator}"/>
+
+                <Button Style="{StaticResource TextToolButton}" Click="OnExportDxf"
+                        Content="DXF" ToolTip="Export DXF R12"/>
+                <Button Style="{StaticResource TextToolButton}" Click="OnExportSvg"
+                        Content="SVG" ToolTip="Export SVG"/>
+
+                <Rectangle Style="{StaticResource BarSeparator}"/>
+
+                <Button x:Name="UndoButton" Style="{StaticResource ToolButton}"
+                        Click="OnUndo" ToolTip="Undo (Ctrl+Z)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconUndo}"/>
+                </Button>
+                <Button x:Name="RedoButton" Style="{StaticResource ToolButton}"
+                        Click="OnRedo" ToolTip="Redo (Ctrl+Y)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconRedo}"/>
+                </Button>
+
+                <Rectangle Style="{StaticResource BarSeparator}"/>
+
+                <ToggleButton x:Name="SelectToggle" Style="{StaticResource ToolToggle}"
+                              Click="OnSelectTool" ToolTip="Select (Esc)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconSelect}"
+                          Fill="#3A4150" StrokeThickness="1"/>
+                </ToggleButton>
+                <ToggleButton x:Name="WireToggle" Style="{StaticResource ToolToggle}"
+                              Click="OnWireTool" ToolTip="Wire (W) — connects pins and wires">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconWire}"/>
+                </ToggleButton>
+
+                <Rectangle Style="{StaticResource BarSeparator}"/>
+
+                <Button Style="{StaticResource ToolButton}" Click="OnNetlist" ToolTip="Show netlist">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconNetlist}"/>
+                </Button>
+                <Button Style="{StaticResource ToolButton}" Click="OnErc"
+                        ToolTip="Electrical rule check">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconErc}"/>
+                </Button>
+                <Button Style="{StaticResource ToolButton}" Click="OnFit" ToolTip="Zoom to fit (F)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconFit}"/>
+                </Button>
+
+                <Button x:Name="RotateButton" Style="{StaticResource ToolButton}"
+                        Click="OnRotate" ToolTip="Rotate 90° (R)" IsEnabled="False">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconRotate}"/>
+                </Button>
+                <Button x:Name="MirrorButton" Style="{StaticResource ToolButton}"
+                        Click="OnMirror" ToolTip="Mirror (M)" IsEnabled="False">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconMirror}"/>
+                </Button>
+
+                <Rectangle Style="{StaticResource BarSeparator}"/>
+
+                <Button x:Name="RunButton" Style="{StaticResource ToolButton}"
+                        Click="OnRunStop" ToolTip="Run simulation">
+                    <Path x:Name="RunIcon" Style="{StaticResource IconPath}"
+                          Data="{StaticResource IconPlay}" Fill="#2E9E4F" Stroke="#2E9E4F"/>
+                </Button>
+                <Button x:Name="ResetButton" Style="{StaticResource ToolButton}"
+                        Click="OnResetSim" ToolTip="Reset simulation time and state" IsEnabled="False">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconReset}"/>
+                </Button>
+                <ToggleButton x:Name="ProbeToggle" Style="{StaticResource ToolToggle}"
+                              Click="OnProbeToggle" IsEnabled="False"
+                              ToolTip="Probe: click a wire for voltage, a component for current; click a probe to remove it">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconProbe}"/>
+                </ToggleButton>
+            </StackPanel>
+        </Border>
+
+        <!-- ========================================================= status bar -->
+        <Border DockPanel.Dock="Bottom" Background="White"
+                BorderBrush="#E1E3E8" BorderThickness="0,1,0,0" Padding="10,4">
+            <DockPanel>
+                <TextBlock x:Name="ToolText" DockPanel.Dock="Left" Text="Select"
+                           FontWeight="SemiBold" Foreground="#3A4150" MinWidth="70"/>
+                <TextBlock x:Name="CoordsText" DockPanel.Dock="Left" Text=""
+                           Foreground="#7A8194" MinWidth="190" Margin="10,0,0,0"/>
+                <TextBlock x:Name="HintText" DockPanel.Dock="Right" Text=""
+                           Foreground="#9AA1B2" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="StatusText" Text="Ready"
+                           Foreground="#3A4150" Margin="10,0"/>
+            </DockPanel>
+        </Border>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="170"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ====================================================== palette -->
+            <Border Grid.Column="0" Background="White"
+                    BorderBrush="#E1E3E8" BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="SYMBOLS"
+                               Style="{StaticResource PanelHeader}"/>
+                    <ListBox x:Name="Palette" BorderThickness="0" Background="Transparent"
+                             SelectionChanged="OnPaletteSelection"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="4,2">
+                                    <Image Source="{Binding Icon}" Width="24" Height="24"
+                                           Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                                               Foreground="#2B303B"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- ======================================================= canvas -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <local:SchematicCanvas x:Name="Canvas"/>
+
+                <Border x:Name="ScopePanel" Grid.Row="1" Height="200"
+                        Background="#12161C" BorderBrush="#E1E3E8" BorderThickness="0,1,0,0"
+                        Visibility="Collapsed">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Background="#1A2028" Padding="8,4">
+                            <DockPanel>
+                                <TextBlock Text="OSCILLOSCOPE" FontSize="10" FontWeight="SemiBold"
+                                           Foreground="#7A8494" VerticalAlignment="Center"/>
+                                <Button DockPanel.Dock="Right" Content="✕" Style="{StaticResource ScopeButton}"
+                                        Click="OnScopeClose" ToolTip="Hide panel"/>
+                                <Button DockPanel.Dock="Right" Content="Clear probes"
+                                        Style="{StaticResource ScopeButton}" Click="OnScopeClear"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
+                                    <RadioButton Content="20 ms" Tag="0.02" GroupName="ScopeWin"
+                                                 Style="{StaticResource ScopeToggle}" Click="OnScopeWindow"/>
+                                    <RadioButton Content="0.2 s" Tag="0.2" GroupName="ScopeWin" IsChecked="True"
+                                                 Style="{StaticResource ScopeToggle}" Click="OnScopeWindow"/>
+                                    <RadioButton Content="2 s" Tag="2" GroupName="ScopeWin"
+                                                 Style="{StaticResource ScopeToggle}" Click="OnScopeWindow"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+                        <local:ScopeView x:Name="Scope"/>
+                    </DockPanel>
+                </Border>
+            </Grid>
+
+            <!-- ==================================================== ERC panel -->
+            <Border Grid.Column="2" x:Name="ErcPanel" Width="300" Background="White"
+                    BorderBrush="#E1E3E8" BorderThickness="1,0,0,0" Visibility="Collapsed">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top">
+                        <Button DockPanel.Dock="Right" Content="✕" Click="OnCloseErcPanel"
+                                Style="{StaticResource ToolButton}" Width="26" Height="24"
+                                Margin="0,6,8,0" FontSize="11" ToolTip="Close"/>
+                        <TextBlock Text="ERC RESULTS" Style="{StaticResource PanelHeader}"/>
+                    </DockPanel>
+                    <ListBox x:Name="ErcList" BorderThickness="0" Background="Transparent"
+                             MouseDoubleClick="OnErcItemActivate"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="2,3">
+                                    <Ellipse Width="9" Height="9" Fill="{Binding DotBrush}"
+                                             VerticalAlignment="Top" Margin="0,4,8,0"/>
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                               MaxWidth="240" Foreground="#2B303B"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

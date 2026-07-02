@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="SchematicEditor.App/SchematicEditor.App.csproj" />
+  <Project Path="SchematicEditor.Core/SchematicEditor.Core.csproj" />
+  <Project Path="SchematicEditor.Tests/SchematicEditor.Tests.csproj" />
+</Solution>

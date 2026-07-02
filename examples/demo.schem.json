@@ -1,0 +1,73 @@
+{
+  "Format": "schematic-editor",
+  "Version": 1,
+  "Symbols": [
+    {
+      "Id": 1,
+      "Symbol": "Battery",
+      "RefDes": "BT1",
+      "Value": "9V"
+    },
+    {
+      "Id": 2,
+      "Symbol": "Switch",
+      "X": 60,
+      "Y": -40,
+      "RefDes": "S1",
+      "Value": ""
+    },
+    {
+      "Id": 3,
+      "Symbol": "Resistor",
+      "X": 120,
+      "Rotation": 1,
+      "RefDes": "R1",
+      "Value": "10k"
+    },
+    {
+      "Id": 4,
+      "Symbol": "Ground",
+      "X": 30,
+      "Y": 40,
+      "RefDes": "GND1",
+      "Value": ""
+    }
+  ],
+  "Wires": [
+    {
+      "Id": 5,
+      "Points": [
+        0,
+        -20,
+        0,
+        -40,
+        40,
+        -40
+      ]
+    },
+    {
+      "Id": 6,
+      "Points": [
+        80,
+        -40,
+        120,
+        -40,
+        120,
+        -20
+      ]
+    },
+    {
+      "Id": 7,
+      "Points": [
+        120,
+        20,
+        120,
+        40,
+        0,
+        40,
+        0,
+        20
+      ]
+    }
+  ]
+}

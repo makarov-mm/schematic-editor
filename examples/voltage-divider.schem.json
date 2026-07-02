@@ -1,0 +1,79 @@
+{
+  "Format": "schematic-editor",
+  "Version": 1,
+  "Symbols": [
+    {
+      "Id": 1,
+      "Symbol": "VSource",
+      "RefDes": "V1",
+      "Value": "10V"
+    },
+    {
+      "Id": 2,
+      "Symbol": "Resistor",
+      "X": 60,
+      "Y": -20,
+      "Rotation": 1,
+      "RefDes": "R1",
+      "Value": "1k"
+    },
+    {
+      "Id": 3,
+      "Symbol": "Resistor",
+      "X": 60,
+      "Y": 40,
+      "Rotation": 1,
+      "RefDes": "R2",
+      "Value": "2k"
+    },
+    {
+      "Id": 4,
+      "Symbol": "Ground",
+      "Y": 80,
+      "RefDes": "GND1",
+      "Value": ""
+    }
+  ],
+  "Wires": [
+    {
+      "Id": 5,
+      "Points": [
+        0,
+        -20,
+        0,
+        -40,
+        60,
+        -40
+      ]
+    },
+    {
+      "Id": 6,
+      "Points": [
+        60,
+        0,
+        60,
+        20
+      ]
+    },
+    {
+      "Id": 7,
+      "Points": [
+        60,
+        60,
+        60,
+        80,
+        0,
+        80
+      ]
+    },
+    {
+      "Id": 8,
+      "Points": [
+        0,
+        20,
+        0,
+        80
+      ]
+    }
+  ]
+}

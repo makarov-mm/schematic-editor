@@ -1,0 +1,96 @@
+{
+  "Format": "schematic-editor",
+  "Version": 1,
+  "Symbols": [
+    {
+      "Id": 1,
+      "Symbol": "Battery",
+      "RefDes": "BT1",
+      "Value": "10V"
+    },
+    {
+      "Id": 2,
+      "Symbol": "Switch",
+      "X": 60,
+      "Y": -40,
+      "RefDes": "S1",
+      "Value": ""
+    },
+    {
+      "Id": 3,
+      "Symbol": "Resistor",
+      "X": 120,
+      "Y": -40,
+      "RefDes": "R1",
+      "Value": "100k"
+    },
+    {
+      "Id": 4,
+      "Symbol": "Capacitor",
+      "X": 180,
+      "Rotation": 1,
+      "RefDes": "C1",
+      "Value": "10u"
+    },
+    {
+      "Id": 5,
+      "Symbol": "Ground",
+      "Y": 60,
+      "RefDes": "GND1",
+      "Value": ""
+    }
+  ],
+  "Wires": [
+    {
+      "Id": 6,
+      "Points": [
+        0,
+        -20,
+        0,
+        -40,
+        40,
+        -40
+      ]
+    },
+    {
+      "Id": 7,
+      "Points": [
+        80,
+        -40,
+        100,
+        -40
+      ]
+    },
+    {
+      "Id": 8,
+      "Points": [
+        140,
+        -40,
+        180,
+        -40,
+        180,
+        -20
+      ]
+    },
+    {
+      "Id": 9,
+      "Points": [
+        180,
+        20,
+        180,
+        60,
+        0,
+        60
+      ]
+    },
+    {
+      "Id": 10,
+      "Points": [
+        0,
+        20,
+        0,
+        60
+      ]
+    }
+  ]
+}

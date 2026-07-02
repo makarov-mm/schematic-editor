@@ -1,0 +1,112 @@
+{
+  "Format": "schematic-editor",
+  "Version": 1,
+  "Symbols": [
+    {
+      "Id": 1,
+      "Symbol": "ACSource",
+      "RefDes": "V1",
+      "Value": "10V 50Hz"
+    },
+    {
+      "Id": 2,
+      "Symbol": "Diode",
+      "X": 60,
+      "Y": -40,
+      "RefDes": "D1",
+      "Value": "1N4148"
+    },
+    {
+      "Id": 3,
+      "Symbol": "Capacitor",
+      "X": 120,
+      "Rotation": 1,
+      "RefDes": "C1",
+      "Value": "47u"
+    },
+    {
+      "Id": 4,
+      "Symbol": "Resistor",
+      "X": 180,
+      "Rotation": 1,
+      "RefDes": "R1",
+      "Value": "1k"
+    },
+    {
+      "Id": 5,
+      "Symbol": "Ground",
+      "Y": 60,
+      "RefDes": "GND1",
+      "Value": ""
+    }
+  ],
+  "Wires": [
+    {
+      "Id": 6,
+      "Points": [
+        0,
+        -20,
+        0,
+        -40,
+        40,
+        -40
+      ]
+    },
+    {
+      "Id": 7,
+      "Points": [
+        80,
+        -40,
+        180,
+        -40,
+        180,
+        -20
+      ]
+    },
+    {
+      "Id": 8,
+      "Points": [
+        120,
+        -40,
+        120,
+        -20
+      ]
+    },
+    {
+      "Id": 9,
+      "Points": [
+        0,
+        20,
+        0,
+        60
+      ]
+    },
+    {
+      "Id": 10,
+      "Points": [
+        0,
+        60,
+        180,
+        60
+      ]
+    },
+    {
+      "Id": 11,
+      "Points": [
+        120,
+        20,
+        120,
+        60
+      ]
+    },
+    {
+      "Id": 12,
+      "Points": [
+        180,
+        20,
+        180,
+        60
+      ]
+    }
+  ]
+}
