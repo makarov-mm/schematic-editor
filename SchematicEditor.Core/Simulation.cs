@@ -59,8 +59,7 @@ public sealed class CircuitSimulator
     public double Time { get; private set; }
     public IReadOnlyList<string> Warnings { get; }
 
-    private CircuitSimulator(NetlistResult netlist, List<Element> elements,
-        Dictionary<Net, int> netNode, int nodeCount, List<string> warnings)
+    private CircuitSimulator(NetlistResult netlist, List<Element> elements, Dictionary<Net, int> netNode, int nodeCount, List<string> warnings)
     {
         _netlist = netlist;
         _elements = elements;
@@ -69,9 +68,15 @@ public sealed class CircuitSimulator
         Warnings = warnings;
 
         int branch = 0;
-        foreach (var e in elements)
+
+        foreach (Element e in elements)
+        {
             if (e.Kind is Kind.SourceDc or Kind.SourceAc or Kind.Inductor)
+            {
                 e.Branch = branch++;
+            }
+        }
+
         _branchCount = branch;
 
         int n = _nodeCount + _branchCount;
@@ -81,7 +86,9 @@ public sealed class CircuitSimulator
         _nodeVoltage = new double[_nodeCount + 1];
 
         foreach (var e in elements)
+        {
             _bySymbolId[e.Symbol.Id] = e;
+        }
     }
 
     /// <summary>
@@ -103,7 +110,7 @@ public sealed class CircuitSimulator
             netNode[net] = grounded ? 0 : next++;
         }
 
-        if (!netlist.Nets.Any(n => netNode[n] == 0))
+        if (netlist.Nets.All(n => netNode[n] != 0))
         {
             problems.Add("No ground: place a Ground symbol to define 0 V.");
             return null;
@@ -473,25 +480,16 @@ public sealed class CircuitSimulator
         }
     }
 
-    // ----------------------------------------------------------------- probes
-
     /// <summary>Resolve the MNA node index that owns the given point (0 = ground), or null.</summary>
-    public int? ResolveNode(Vec2 point) =>
-        _netlist.FindNetAt(point) is { } net && _netNode.TryGetValue(net, out int node)
-            ? node : null;
-
-    /// <summary>Name of the net that owns the given point, or null.</summary>
-    public string? ResolveNetName(Vec2 point) => _netlist.FindNetAt(point)?.Name;
+    public int? ResolveNode(Vec2 point) => _netlist.FindNetAt(point) is { } net && _netNode.TryGetValue(net, out int node) ? node : null;
 
     public double GetNodeVoltage(int node) => node == 0 ? 0.0 : _nodeVoltage[node];
 
     /// <summary>Voltage of the net that owns the given point, or null.</summary>
-    public double? GetVoltageAt(Vec2 point) =>
-        ResolveNode(point) is { } node ? GetNodeVoltage(node) : null;
+    public double? GetVoltageAt(Vec2 point) => ResolveNode(point) is { } node ? GetNodeVoltage(node) : null;
 
     /// <summary>Current through a two-terminal symbol (pin 1 → pin 2 positive), or null.</summary>
-    public double? GetCurrent(SymbolInstance sym) =>
-        _bySymbolId.TryGetValue(sym.Id, out var e) ? e.Current : null;
+    public double? GetCurrent(SymbolInstance sym) => _bySymbolId.TryGetValue(sym.Id, out var e) ? e.Current : null;
 
     /// <summary>Lamp brightness 0..1 (rated power → 1).</summary>
     public double GetLampBrightness(SymbolInstance lamp)
@@ -502,6 +500,5 @@ public sealed class CircuitSimulator
         return Math.Clamp(power / e.RatedPower, 0, 1);
     }
 
-    public bool IsFuseBlown(SymbolInstance fuse) =>
-        _bySymbolId.TryGetValue(fuse.Id, out var e) && e.FuseBlown;
+    public bool IsFuseBlown(SymbolInstance fuse) => _bySymbolId.TryGetValue(fuse.Id, out var e) && e.FuseBlown;
 }

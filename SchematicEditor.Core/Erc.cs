@@ -23,12 +23,18 @@ public static class ErcChecker
 
         // E1: pins not present in any net with >= 2 connections.
         var connectedPins = new HashSet<(int, string)>();
+
         foreach (var net in netlist.Nets)
         {
             bool hasWires = net.Wires.Count > 0;
+
             foreach (var pin in net.Pins)
+            {
                 if (hasWires || net.Pins.Count > 1)
+                {
                     connectedPins.Add((pin.Symbol.Id, pin.Pin.Name));
+                }
+            }
         }
 
         foreach (var sym in doc.Symbols)
@@ -36,25 +42,31 @@ public static class ErcChecker
             foreach (var (pin, world) in sym.WorldPins())
             {
                 if (!connectedPins.Contains((sym.Id, pin.Name)))
-                    issues.Add(new ErcIssue(ErcSeverity.Error,
-                        $"Unconnected pin {sym.RefDes}.{pin.Name}", world));
+                {
+                    issues.Add(new ErcIssue(ErcSeverity.Error, $"Unconnected pin {sym.RefDes}.{pin.Name}", world));
+                }
             }
 
             if (sym.RefDes.EndsWith('?'))
-                issues.Add(new ErcIssue(ErcSeverity.Warning,
-                    $"Symbol has no reference designator: {sym.RefDes}", sym.Position));
+            {
+                issues.Add(new ErcIssue(ErcSeverity.Warning, $"Symbol has no reference designator: {sym.RefDes}", sym.Position));
+            }
         }
 
         // E2: dangling wire ends.
-        foreach (var p in netlist.DanglingWireEnds)
-            issues.Add(new ErcIssue(ErcSeverity.Error,
-                $"Dangling wire end at ({p.X:0.#}, {p.Y:0.#})", p));
+        foreach (Vec2 p in netlist.DanglingWireEnds)
+        {
+            issues.Add(new ErcIssue(ErcSeverity.Error, $"Dangling wire end at ({p.X:0.#}, {p.Y:0.#})", p));
+        }
 
         // E3: single-pin nets (a wire that reaches exactly one pin).
-        foreach (var net in netlist.Nets)
+        foreach (Net net in netlist.Nets)
+        {
             if (net.Pins.Count == 1 && net.Wires.Count > 0)
-                issues.Add(new ErcIssue(ErcSeverity.Warning,
-                    $"Net {net.Name} connects only one pin ({net.Pins[0]})", net.Pins[0].World));
+            {
+                issues.Add(new ErcIssue(ErcSeverity.Warning, $"Net {net.Name} connects only one pin ({net.Pins[0]})", net.Pins[0].World));
+            }
+        }
 
         // E4: shorted two-terminal sources.
         foreach (var net in netlist.Nets)
@@ -62,12 +74,13 @@ public static class ErcChecker
             var bySymbol = net.Pins
                 .Where(p => p.Symbol.Definition.Name is "VSource" or "Battery")
                 .GroupBy(p => p.Symbol.Id);
-            foreach (var g in bySymbol)
+
+            foreach (IGrouping<int, NetPin> g in bySymbol)
             {
                 if (g.Count() >= 2)
-                    issues.Add(new ErcIssue(ErcSeverity.Error,
-                        $"Source {g.First().Symbol.RefDes} is short-circuited (both terminals on net {net.Name})",
-                        g.First().Symbol.Position));
+                {
+                    issues.Add(new ErcIssue(ErcSeverity.Error, $"Source {g.First().Symbol.RefDes} is short-circuited (both terminals on net {net.Name})", g.First().Symbol.Position));
+                }
             }
         }
 

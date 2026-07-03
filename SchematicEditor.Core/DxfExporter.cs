@@ -19,12 +19,12 @@ public static class DxfExporter
     {
         var sb = new StringBuilder();
 
-        // --- HEADER ---
+        // HEADER
         Pair(sb, 0, "SECTION"); Pair(sb, 2, "HEADER");
         Pair(sb, 9, "$ACADVER"); Pair(sb, 1, "AC1009");
         Pair(sb, 0, "ENDSEC");
 
-        // --- TABLES (layers) ---
+        // TABLES (layers)
         Pair(sb, 0, "SECTION"); Pair(sb, 2, "TABLES");
         Pair(sb, 0, "TABLE"); Pair(sb, 2, "LAYER"); Pair(sb, 70, "3");
         Layer(sb, LayerSymbols, 7);
@@ -33,26 +33,39 @@ public static class DxfExporter
         Pair(sb, 0, "ENDTAB");
         Pair(sb, 0, "ENDSEC");
 
-        // --- ENTITIES ---
+        // ENTITIES
         Pair(sb, 0, "SECTION"); Pair(sb, 2, "ENTITIES");
 
-        foreach (var wire in doc.Wires)
-            foreach (var (a, b) in wire.Segments())
+        foreach (Wire wire in doc.Wires)
+        {
+            foreach ((Vec2 a, Vec2 b) in wire.Segments())
+            {
                 Line(sb, LayerWires, a, b);
+            }
+        }
 
         var netlist = NetlistExtractor.Extract(doc);
-        foreach (var j in netlist.Junctions)
-            Circle(sb, LayerWires, j, 1.2);
 
-        foreach (var sym in doc.Symbols)
+        foreach (var j in netlist.Junctions)
+        {
+            Circle(sb, LayerWires, j, 1.2);
+        }
+
+        foreach (SymbolInstance sym in doc.Symbols)
         {
             ExportSymbol(sb, sym);
 
-            var (refPos, valPos) = sym.LabelAnchors();
+            (Vec2 refPos, Vec2 valPos) = sym.LabelAnchors();
+
             if (!string.IsNullOrEmpty(sym.RefDes) && sym.Definition.Name != "Ground")
+            {
                 Text(sb, LayerText, refPos, sym.RefDes, 5);
+            }
+
             if (!string.IsNullOrEmpty(sym.Value))
+            {
                 Text(sb, LayerText, valPos, sym.Value, 5);
+            }
         }
 
         Pair(sb, 0, "ENDSEC");
@@ -60,8 +73,7 @@ public static class DxfExporter
         return sb.ToString();
     }
 
-    public static void ExportToFile(SchematicDocument doc, string path) =>
-        File.WriteAllText(path, Export(doc), new UTF8Encoding(false));
+    public static void ExportToFile(SchematicDocument doc, string path) => File.WriteAllText(path, Export(doc), new UTF8Encoding(false));
 
     private static void ExportSymbol(StringBuilder sb, SymbolInstance sym)
     {
@@ -75,7 +87,8 @@ public static class DxfExporter
 
                 case PolyPrim poly:
                 {
-                    var pts = poly.Points.Select(sym.ToWorld).ToArray();
+                    Vec2[] pts = poly.Points.Select(sym.ToWorld).ToArray();
+
                     if (poly.Filled && pts.Length == 3)
                     {
                         Solid(sb, LayerSymbols, pts[0], pts[1], pts[2]);
@@ -83,8 +96,11 @@ public static class DxfExporter
                     else
                     {
                         int count = poly.Closed ? pts.Length : pts.Length - 1;
+
                         for (int i = 0; i < count; i++)
+                        {
                             Line(sb, LayerSymbols, pts[i], pts[(i + 1) % pts.Length]);
+                        }
                     }
                     break;
                 }
@@ -97,9 +113,13 @@ public static class DxfExporter
                 {
                     // Flattened: rotation/mirror of true ARC entities is error-prone,
                     // short polylines import identically everywhere.
-                    var pts = arc.Flatten().Select(sym.ToWorld).ToArray();
+                    Vec2[] pts = arc.Flatten().Select(sym.ToWorld).ToArray();
+
                     for (int i = 0; i + 1 < pts.Length; i++)
+                    {
                         Line(sb, LayerSymbols, pts[i], pts[i + 1]);
+                    }
+
                     break;
                 }
 
@@ -109,9 +129,6 @@ public static class DxfExporter
             }
         }
     }
-
-    // --- entity helpers -------------------------------------------------
-
     private static string F(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);
 
     private static void Pair(StringBuilder sb, int code, string value)

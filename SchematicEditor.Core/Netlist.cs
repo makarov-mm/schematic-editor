@@ -110,23 +110,33 @@ public static class NetlistExtractor
         }
 
         List<List<NetPin>> pinAtNode = [];
-        void EnsurePinLists() { while (pinAtNode.Count < nodePoints.Count) pinAtNode.Add([]); }
 
-        var wires = doc.Wires.ToList();
+        void EnsurePinLists()
+        {
+            while (pinAtNode.Count < nodePoints.Count)
+            {
+                pinAtNode.Add([]);
+            }
+        }
+
+        List<Wire> wires = doc.Wires.ToList();
         List<int[]> wireNodeLists = [];
 
-        foreach (var wire in wires)
-            wireNodeLists.Add(wire.Points.Select(NodeOf).ToArray());
-
-        foreach (var sym in doc.Symbols)
+        foreach (Wire wire in wires)
         {
-            foreach (var (pin, world) in sym.WorldPins())
+            wireNodeLists.Add(wire.Points.Select(NodeOf).ToArray());
+        }
+
+        foreach (SymbolInstance sym in doc.Symbols)
+        {
+            foreach ((PinDefinition pin, Vec2 world) in sym.WorldPins())
             {
                 int n = NodeOf(world);
                 EnsurePinLists();
                 pinAtNode[n].Add(new NetPin(sym, pin, world));
             }
         }
+
         EnsurePinLists();
 
         var uf = new UnionFind(nodePoints.Count);

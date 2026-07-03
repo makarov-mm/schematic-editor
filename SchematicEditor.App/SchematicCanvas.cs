@@ -113,17 +113,15 @@ public sealed class SchematicCanvas : FrameworkElement
     /// <summary>When true, clicks place probes (works while editing and while running).</summary>
     public bool ProbeArmed
     {
-        get => _probeArmed;
+        get;
         set
         {
-            if (_probeArmed == value) return;
-            _probeArmed = value;
+            if (field == value) return;
+            field = value;
             SelectionOrToolChanged?.Invoke();
             InvalidateVisual();
         }
     }
-
-    private bool _probeArmed;
 
     /// <summary>Raised after every simulation frame (batch of steps).</summary>
     public event Action? SimulationFrame;
@@ -236,10 +234,6 @@ public sealed class SchematicCanvas : FrameworkElement
     }
 
     public NetlistResult CurrentNetlist => _netlist;
-
-    // ------------------------------------------------------------ view math
-
-    private Point ToScreen(Vec2 w) => new(w.X * _zoom + _pan.X, w.Y * _zoom + _pan.Y);
     private Vec2 ToWorld(Point s) => new((s.X - _pan.X) / _zoom, (s.Y - _pan.Y) / _zoom);
     private double HitTolerance => 6.0 / _zoom;
 
@@ -266,8 +260,6 @@ public sealed class SchematicCanvas : FrameworkElement
         _pan = new Vector(ActualWidth * 0.5 - world.X * _zoom, ActualHeight * 0.5 - world.Y * _zoom);
         InvalidateVisual();
     }
-
-    // ------------------------------------------------------- simulation control
 
     /// <summary>Build the circuit and start real-time simulation. False if it cannot run.</summary>
     public bool StartSimulation()

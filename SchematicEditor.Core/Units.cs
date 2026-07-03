@@ -24,19 +24,19 @@ public static class Units
             return false;
 
         string rest = text[i..].Trim();
-        double mult = 1;
+        double multiplier = 1;
 
         if (rest.Length > 0)
         {
             // "Meg" is the only multi-letter multiplier worth supporting.
             if (rest.StartsWith("Meg", StringComparison.OrdinalIgnoreCase))
             {
-                mult = 1e6;
+                multiplier = 1e6;
                 rest = rest[3..];
             }
             else if (!IsUnitWord(rest))
             {
-                mult = rest[0] switch
+                multiplier = rest[0] switch
                 {
                     'p' => 1e-12,
                     'n' => 1e-9,
@@ -47,14 +47,14 @@ public static class Units
                     'G' => 1e9,
                     _ => double.NaN,
                 };
-                if (double.IsNaN(mult)) return false;
+                if (double.IsNaN(multiplier)) return false;
                 rest = rest[1..];
             }
         }
 
         if (rest.Length > 0 && !IsUnitWord(rest)) return false;
 
-        value = number * mult;
+        value = number * multiplier;
         return true;
     }
 
@@ -90,7 +90,7 @@ public static class Units
             ratedPower = ww;
             return true;
         }
-        if (ohms is { } rr && rr > 0)
+        if (ohms is { } rr and > 0)
         {
             resistance = rr;
             ratedPower = watts ?? 1;

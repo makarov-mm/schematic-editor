@@ -64,12 +64,9 @@ public static class SvgExporter
         return sb.ToString();
     }
 
-    public static void ExportToFile(SchematicDocument doc, string path) =>
-        File.WriteAllText(path, Export(doc), new UTF8Encoding(false));
-
     private static void ExportSymbol(StringBuilder sb, SymbolInstance sym)
     {
-        foreach (var prim in sym.ActivePrimitives)
+        foreach (DrawPrimitive prim in sym.ActivePrimitives)
         {
             switch (prim)
             {
@@ -122,7 +119,6 @@ public static class SvgExporter
     }
 
     private static string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
-
-    private static string Esc(string s) => s
-        .Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+    private static string Esc(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+    public static void ExportToFile(SchematicDocument doc, string path) => File.WriteAllText(path, Export(doc), new UTF8Encoding(false));
 }

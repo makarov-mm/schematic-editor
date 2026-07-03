@@ -54,26 +54,31 @@ public static class JsonIo
 
         var doc = new SchematicDocument();
 
-        foreach (var s in dto.Symbols ?? new List<SymbolDto>())
+        foreach (SymbolDto s in dto.Symbols)
         {
             var inst = new SymbolInstance(SymbolLibrary.Get(s.Symbol), new Vec2(s.X, s.Y))
             {
                 Rotation = (Rotation)(s.Rotation & 3),
                 Mirror = s.Mirror,
-                RefDes = s.RefDes ?? "?",
-                Value = s.Value ?? "",
+                RefDes = s.RefDes,
+                Value = s.Value,
                 StateOn = s.On,
                 Id = s.Id,
             };
+
             doc.AddElement(inst);
         }
 
-        foreach (var w in dto.Wires ?? new List<WireDto>())
+        foreach (WireDto w in dto.Wires)
         {
             if (w.Points.Length < 4 || w.Points.Length % 2 != 0) continue;
             var pts = new List<Vec2>(w.Points.Length / 2);
+
             for (int i = 0; i + 1 < w.Points.Length; i += 2)
+            {
                 pts.Add(new Vec2(w.Points[i], w.Points[i + 1]));
+            }
+
             doc.AddElement(new Wire(pts) { Id = w.Id });
         }
 
@@ -81,9 +86,5 @@ public static class JsonIo
         return doc;
     }
 
-    public static SchematicDocument LoadFromFile(string path) =>
-        Load(File.ReadAllText(path));
-
-    public static SchematicDocument LoadFromFile(string path, out List<ProbeInfo> probes) =>
-        Load(File.ReadAllText(path), out probes);
+    public static SchematicDocument LoadFromFile(string path, out List<ProbeInfo> probes) => Load(File.ReadAllText(path), out probes);
 }

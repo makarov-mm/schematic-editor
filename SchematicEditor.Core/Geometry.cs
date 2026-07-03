@@ -4,18 +4,14 @@ namespace SchematicEditor.Core;
 public readonly record struct Vec2(double X, double Y)
 {
     public static Vec2 Zero => new(0, 0);
-
     public static Vec2 operator +(Vec2 a, Vec2 b) => new(a.X + b.X, a.Y + b.Y);
     public static Vec2 operator -(Vec2 a, Vec2 b) => new(a.X - b.X, a.Y - b.Y);
     public static Vec2 operator *(Vec2 a, double k) => new(a.X * k, a.Y * k);
-
     public double Length => Math.Sqrt(X * X + Y * Y);
-
     public double DistanceTo(Vec2 other) => (this - other).Length;
 
     /// <summary>Snap to the nearest grid node.</summary>
-    public Vec2 Snap(double grid) =>
-        new(Math.Round(X / grid) * grid, Math.Round(Y / grid) * grid);
+    public Vec2 Snap(double grid) => new(Math.Round(X / grid) * grid, Math.Round(Y / grid) * grid);
 
     /// <summary>Integer key for exact-coincidence tests (0.1 unit resolution).</summary>
     public (long, long) Key() => ((long)Math.Round(X * 10.0), (long)Math.Round(Y * 10.0));
@@ -32,15 +28,13 @@ public readonly record struct Vec2(double X, double Y)
     }
 
     /// <summary>True if the point lies on segment [a, b] within tolerance.</summary>
-    public bool IsOnSegment(Vec2 a, Vec2 b, double tol = 0.05) =>
-        DistanceToSegment(a, b) <= tol;
+    public bool IsOnSegment(Vec2 a, Vec2 b, double tol = 0.05) => DistanceToSegment(a, b) <= tol;
 }
 
 /// <summary>Axis-aligned rectangle.</summary>
 public readonly record struct Rect2(double MinX, double MinY, double MaxX, double MaxY)
 {
     public static Rect2 Empty => new(double.MaxValue, double.MaxValue, double.MinValue, double.MinValue);
-
     public double Width => MaxX - MinX;
     public double Height => MaxY - MinY;
     public Vec2 Center => new((MinX + MaxX) * 0.5, (MinY + MaxY) * 0.5);

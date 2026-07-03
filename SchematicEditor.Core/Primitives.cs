@@ -25,11 +25,13 @@ public sealed record ArcPrim(Vec2 Center, double Radius, double StartDeg, double
         double a0 = StartDeg * Math.PI / 180.0;
         double a1 = EndDeg * Math.PI / 180.0;
         var pts = new Vec2[segments + 1];
+
         for (int i = 0; i <= segments; i++)
         {
             double a = a0 + (a1 - a0) * i / segments;
             pts[i] = new Vec2(Center.X + Radius * Math.Cos(a), Center.Y + Radius * Math.Sin(a));
         }
+
         return pts;
     }
 }

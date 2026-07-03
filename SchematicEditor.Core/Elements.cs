@@ -8,25 +8,17 @@ public abstract class SchematicElement
 }
 
 /// <summary>A placed instance of a library symbol.</summary>
-public sealed class SymbolInstance : SchematicElement
+public sealed class SymbolInstance(SymbolDefinition definition, Vec2 position) : SchematicElement
 {
-    public SymbolDefinition Definition { get; }
-    public Vec2 Position { get; set; }
+    public SymbolDefinition Definition { get; } = definition;
+    public Vec2 Position { get; set; } = position;
     public Rotation Rotation { get; set; }
     public bool Mirror { get; set; }
-    public string RefDes { get; set; }
-    public string Value { get; set; }
+    public string RefDes { get; set; } = definition.RefPrefix + "?";
+    public string Value { get; set; } = definition.DefaultValue;
 
     /// <summary>Interactive state (closed for switches). Persisted; toggled at run time.</summary>
     public bool StateOn { get; set; }
-
-    public SymbolInstance(SymbolDefinition definition, Vec2 position)
-    {
-        Definition = definition;
-        Position = position;
-        RefDes = definition.RefPrefix + "?";
-        Value = definition.DefaultValue;
-    }
 
     public Vec2 ToWorld(Vec2 local) => Transform2.Apply(local, Rotation, Mirror, Position);
 
@@ -37,15 +29,17 @@ public sealed class SymbolInstance : SchematicElement
     /// <summary>World-space connection points of all pins, in definition order.</summary>
     public IEnumerable<(PinDefinition Pin, Vec2 World)> WorldPins()
     {
-        foreach (var pin in Definition.Pins)
+        foreach (PinDefinition pin in Definition.Pins)
+        {
             yield return (pin, ToWorld(pin.Position));
+        }
     }
 
     public override Rect2 Bounds
     {
         get
         {
-            var lb = Definition.LocalBounds;
+            Rect2 lb = Definition.LocalBounds;
             var r = Rect2.Empty;
             r = r.Include(ToWorld(new Vec2(lb.MinX, lb.MinY)));
             r = r.Include(ToWorld(new Vec2(lb.MaxX, lb.MinY)));
@@ -58,23 +52,23 @@ public sealed class SymbolInstance : SchematicElement
     /// <summary>Anchor points for the refdes (above) and value (below) labels, world space.</summary>
     public (Vec2 RefDes, Vec2 Value) LabelAnchors()
     {
-        var b = Bounds;
-        var c = b.Center;
+        Rect2 b = Bounds;
+        Vec2 c = b.Center;
         return (new Vec2(c.X, b.MinY - 4), new Vec2(c.X, b.MaxY + 4));
     }
 }
 
 /// <summary>A wire: an open polyline of grid-snapped vertices (orthogonal by construction).</summary>
-public sealed class Wire : SchematicElement
+public sealed class Wire(IEnumerable<Vec2> points) : SchematicElement
 {
-    public List<Vec2> Points { get; }
-
-    public Wire(IEnumerable<Vec2> points) => Points = new List<Vec2>(points);
+    public List<Vec2> Points { get; } = [..points];
 
     public IEnumerable<(Vec2 A, Vec2 B)> Segments()
     {
         for (int i = 0; i + 1 < Points.Count; i++)
+        {
             yield return (Points[i], Points[i + 1]);
+        }
     }
 
     public override Rect2 Bounds
@@ -82,7 +76,12 @@ public sealed class Wire : SchematicElement
         get
         {
             var r = Rect2.Empty;
-            foreach (var p in Points) r = r.Include(p);
+
+            foreach (Vec2 p in Points)
+            {
+                r = r.Include(p);
+            }
+
             return r;
         }
     }
@@ -90,8 +89,12 @@ public sealed class Wire : SchematicElement
     public double DistanceTo(Vec2 p)
     {
         double best = double.MaxValue;
-        foreach (var (a, b) in Segments())
+
+        foreach ((Vec2 a, Vec2 b) in Segments())
+        {
             best = Math.Min(best, p.DistanceToSegment(a, b));
+        }
+
         return best;
     }
 }

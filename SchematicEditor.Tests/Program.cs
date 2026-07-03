@@ -9,7 +9,7 @@ void Check(bool cond, string name)
     else { failed++; Console.WriteLine($"  FAIL {name}"); }
 }
 
-// ---------------------------------------------------------------- transforms
+// Transforms
 Console.WriteLine("Transforms:");
 {
     var def = SymbolLibrary.Get("Resistor");
@@ -25,7 +25,7 @@ Console.WriteLine("Transforms:");
     Check(pins[0].Key() == new Vec2(120, 50).Key(), "Mirror pin 1 position");
 }
 
-// ------------------------------------------------------- build a demo circuit
+// Build a demo circuit
 // Battery -> switch -> resistor -> back to battery, with a ground tap (T-connection).
 var doc = new SchematicDocument();
 var undo = new UndoStack(doc);
@@ -57,7 +57,7 @@ Console.WriteLine("RefDes assignment:");
 Check(bt.RefDes == "BT1", $"battery refdes ({bt.RefDes})");
 Check(r.RefDes == "R1", $"resistor refdes ({r.RefDes})");
 
-// ------------------------------------------------------------------- netlist
+// Netlist
 Console.WriteLine("Netlist:");
 var netlist = NetlistExtractor.Extract(doc);
 Console.Write(netlist.ToText());
@@ -77,7 +77,7 @@ Check(netlist.Junctions.Count == 1 && netlist.Junctions[0].Key() == new Vec2(30,
     "junction at (30,40)");
 Check(netlist.DanglingWireEnds.Count == 0, "no dangling wire ends");
 
-// ----------------------------------------------------------------------- ERC
+// ERC
 Console.WriteLine("ERC (clean circuit):");
 var issues = ErcChecker.Check(doc, netlist);
 foreach (var i in issues) Console.WriteLine("  " + i);
@@ -101,17 +101,17 @@ issues = ErcChecker.Check(doc, netlist);
 Check(issues.Any(i => i.Message.Contains("short-circuited")), "shorted battery detected");
 undo.Undo(); // remove the short
 
-// ----------------------------------------------------------------- undo/redo
+// Undo/redo
 Console.WriteLine("Undo/redo:");
 int before = doc.Elements.Count;
-undo.Push(new DeleteElementsCommand(new SchematicElement[] { floating, stub }));
+undo.Push(new DeleteElementsCommand([floating, stub]));
 Check(doc.Elements.Count == before - 2, "delete removed 2 elements");
 undo.Undo();
 Check(doc.Elements.Count == before, "undo restored elements");
 undo.Redo();
 Check(doc.Elements.Count == before - 2, "redo re-applied delete");
 
-undo.Push(new MoveElementsCommand(new SchematicElement[] { r }, new Vec2(5, 5)));
+undo.Push(new MoveElementsCommand([r], new Vec2(5, 5)));
 Check(r.Position.Key() == new Vec2(125, 5).Key(), "move applied");
 undo.Undo();
 Check(r.Position.Key() == new Vec2(120, 0).Key(), "move undone");
@@ -121,7 +121,7 @@ Check(r.Rotation == Rotation.R180, "rotate 90 -> 180");
 undo.Undo();
 Check(r.Rotation == Rotation.R90, "rotate undone");
 
-// --------------------------------------------------------------- JSON I/O
+// JSON I/O
 Console.WriteLine("JSON roundtrip:");
 string json = JsonIo.Save(doc);
 var doc2 = JsonIo.Load(json);
@@ -134,7 +134,7 @@ var net2 = NetlistExtractor.Extract(doc2);
 Check(net2.Nets.Count == NetlistExtractor.Extract(doc).Nets.Count,
     "netlist identical after roundtrip");
 
-// ------------------------------------------------------------------ exports
+// Exports
 Console.WriteLine("Connection queries:");
 Check(doc.IsConnectionPoint(new Vec2(0, -20)), "battery pin is a connection point");
 Check(doc.IsConnectionPoint(new Vec2(60, 40)), "wire segment interior is a connection point");
@@ -159,7 +159,7 @@ File.WriteAllText("/tmp/demo.dxf", dxf);
 File.WriteAllText("/tmp/demo.svg", svg);
 File.WriteAllText("/tmp/demo.schem.json", json);
 
-// ------------------------------------------------------------ units parsing
+// Units parsing
 Console.WriteLine("Units:");
 {
     Check(Units.TryParse("10k", out double v1) && Math.Abs(v1 - 10_000) < 1e-9, "10k -> 10000");
@@ -175,7 +175,7 @@ Console.WriteLine("Units:");
     Check(!Units.TryParse("abc", out _), "garbage rejected");
 }
 
-// ------------------------------------------------------- simulation helpers
+// Simulation helpers
 SchematicDocument SimDoc(Action<SchematicDocument, Func<string, Vec2, Rotation, SymbolInstance>, Action<Vec2[]>> build)
 {
     var d = new SchematicDocument();
@@ -198,7 +198,7 @@ CircuitSimulator MustBuild(SchematicDocument d)
     return sim;
 }
 
-// --------------------------------------------------------------- DC divider
+// DC divider
 Console.WriteLine("Simulation, DC divider:");
 {
     // V1 10V vertical at x=0; R1, R2 stacked at x=60; mid node between them.
@@ -226,7 +226,7 @@ Console.WriteLine("Simulation, DC divider:");
     Check(top != null && Math.Abs(top.Value - 10.0) < 1e-3, "source node = 10 V");
 }
 
-// ------------------------------------------------------------- RC charging
+// RC charging
 Console.WriteLine("Simulation, RC transient:");
 {
     var d = SimDoc((doc, P, W) =>
@@ -252,7 +252,7 @@ Console.WriteLine("Simulation, RC transient:");
         $"RC at t=tau: {vc:0.###} V vs {expected:0.###} V");
 }
 
-// -------------------------------------------------------------- RL step
+// RL step
 Console.WriteLine("Simulation, RL transient:");
 {
     SymbolInstance? l = null;
@@ -279,7 +279,7 @@ Console.WriteLine("Simulation, RL transient:");
         $"RL at t=tau: |I| {Math.Abs(il ?? 0):0.######} vs {expected:0.######}");
 }
 
-// ----------------------------------------------------------------- AC + amp
+// AC + amp
 Console.WriteLine("Simulation, AC source:");
 {
     var d = SimDoc((doc, P, W) =>
@@ -306,7 +306,7 @@ Console.WriteLine("Simulation, AC source:");
     Check(Math.Abs(vEnd) < 0.2, $"AC value at full period ≈ 0 (got {vEnd:0.###})");
 }
 
-// ------------------------------------------------------------ switch + lamp
+// Switch + lamp
 Console.WriteLine("Simulation, switch and lamp:");
 {
     SymbolInstance? swi = null, lamp = null;
@@ -341,7 +341,7 @@ Console.WriteLine("Simulation, switch and lamp:");
     Check(sim.GetLampBrightness(lamp!) < 0.01, "switch reopened: lamp dark again");
 }
 
-// ------------------------------------------------------------------- fuse
+// Fuse
 Console.WriteLine("Simulation, fuse:");
 {
     SymbolInstance? fuse = null;
@@ -369,7 +369,7 @@ Console.WriteLine("Simulation, fuse:");
     Check(!sim.IsFuseBlown(fuse!), "reset un-blows the fuse");
 }
 
-// ------------------------------------------------------- diode rectifier
+// Diode rectifier
 Console.WriteLine("Simulation, diode rectifier:");
 {
     var d = SimDoc((doc, P, W) =>
@@ -398,7 +398,7 @@ Console.WriteLine("Simulation, diode rectifier:");
     Check(vmin > -0.2, $"negative half suppressed (got min {vmin:0.###})");
 }
 
-// ------------------------------------------------- two separate ground nets
+// Two separate ground nets
 Console.WriteLine("Simulation, ground merging:");
 {
     var d = SimDoc((doc, P, W) =>
@@ -419,7 +419,7 @@ Console.WriteLine("Simulation, ground merging:");
         $"separate grounds form one reference (got {top:0.###})");
 }
 
-// -------------------------------------------------- probe persistence
+// Probe persistence
 Console.WriteLine("JSON, probe roundtrip:");
 {
     var d = SimDoc((doc, P, W) =>
@@ -445,7 +445,7 @@ Console.WriteLine("JSON, probe roundtrip:");
     Check(NetlistExtractor.Extract(d).FindNetAt(new Vec2(300, 300)) == null, "FindNetAt misses empty space");
 }
 
-// ------------------------------------------------- build-time diagnostics
+// Build-time diagnostics
 Console.WriteLine("Simulation, diagnostics:");
 {
     var d1 = SimDoc((doc, P, W) =>
@@ -470,6 +470,6 @@ Console.WriteLine("Simulation, diagnostics:");
         "missing source reported");
 }
 
-// ------------------------------------------------------------------ summary
+// Summary
 Console.WriteLine($"\n{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
