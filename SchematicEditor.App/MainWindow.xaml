@@ -26,6 +26,7 @@
         <Geometry x:Key="IconStop">M4,4 H12 V12 H4 Z</Geometry>
         <Geometry x:Key="IconReset">M12.8,5.2 A5.2,5.2 0 1 0 13.2,9.5 M13.4,2 L12.8,5.4 L9.4,4.8</Geometry>
         <Geometry x:Key="IconProbe">M2.5,13.5 L10.2,5.8 M11.5,4.5 m-1.9,0 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0</Geometry>
+        <Geometry x:Key="IconProbeClear">M2.5,13.5 L10.2,5.8 M11.5,4.5 m-1.9,0 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0 M11,10.5 L15,14.5 M15,10.5 L11,14.5</Geometry>
 
         <Style x:Key="IconPath" TargetType="Path">
             <Setter Property="Stroke" Value="#3A4150"/>
@@ -245,10 +246,14 @@
                     <Path Style="{StaticResource IconPath}" Data="{StaticResource IconReset}"/>
                 </Button>
                 <ToggleButton x:Name="ProbeToggle" Style="{StaticResource ToolToggle}"
-                              Click="OnProbeToggle" IsEnabled="False"
-                              ToolTip="Probe: click a wire for voltage, a component for current; click a probe to remove it">
+                              Click="OnProbeToggle"
+                              ToolTip="Probe: click a wire for voltage, a component for current; click a probe to remove it (Esc to exit)">
                     <Path Style="{StaticResource IconPath}" Data="{StaticResource IconProbe}"/>
                 </ToggleButton>
+                <Button x:Name="ClearProbesButton" Style="{StaticResource ToolButton}"
+                        Click="OnClearProbes" IsEnabled="False" ToolTip="Remove all probes">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconProbeClear}"/>
+                </Button>
             </StackPanel>
         </Border>
 

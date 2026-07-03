@@ -34,6 +34,8 @@ public partial class MainWindow : Window
         Canvas.CursorStatusChanged += s => CoordsText.Text = s;
         Canvas.SelectionOrToolChanged += UpdateToolbar;
         Canvas.SimulationStateChanged += OnSimulationStateChanged;
+        Canvas.SimulationFrame += () =>
+            ClearProbesButton.IsEnabled = Canvas.Probes.Count > 0;
         Scope.Attach(Canvas);
         UpdateToolbar();
 
@@ -68,10 +70,14 @@ public partial class MainWindow : Window
         Palette.IsEnabled = !running;
         RotateButton.IsEnabled = Canvas.CanRotateMirror;
         MirrorButton.IsEnabled = Canvas.CanRotateMirror;
+        ProbeToggle.IsChecked = Canvas.ProbeArmed;
 
         (ToolText.Text, HintText.Text) = running
             ? ("Running",
                 "Click a switch to toggle it  •  probe tool: click a wire or component  •  Esc stop")
+            : Canvas.ProbeArmed
+            ? ("Probe",
+                "Click a wire/pin for a voltage probe, a component body for current  •  click a probe to remove it  •  Esc exit")
             : Canvas.Tool switch
             {
                 EditorTool.Wire => ("Wire",
@@ -99,12 +105,6 @@ public partial class MainWindow : Window
         RunButton.ToolTip = running ? "Stop simulation (Esc)" : "Run simulation";
 
         ResetButton.IsEnabled = running;
-        ProbeToggle.IsEnabled = running;
-        if (!running)
-        {
-            ProbeToggle.IsChecked = false;
-            Canvas.ProbeArmed = false;
-        }
 
         if (running)
             ScopePanel.Visibility = Visibility.Visible;
@@ -151,6 +151,12 @@ public partial class MainWindow : Window
             Scope.WindowSeconds = sec;
             Scope.InvalidateVisual();
         }
+        Canvas.Focus();
+    }
+
+    private void OnClearProbes(object sender, RoutedEventArgs e)
+    {
+        Canvas.ClearProbes();
         Canvas.Focus();
     }
 
@@ -209,7 +215,9 @@ public partial class MainWindow : Window
 
         try
         {
-            Canvas.SetDocument(JsonIo.LoadFromFile(dlg.FileName));
+            var loadedDoc = JsonIo.LoadFromFile(dlg.FileName, out var savedProbes);
+            Canvas.SetDocument(loadedDoc);
+            Canvas.LoadProbes(savedProbes);
             _currentPath = dlg.FileName;
             Title = "Schematic Editor — " + Path.GetFileName(dlg.FileName);
         }
@@ -230,7 +238,7 @@ public partial class MainWindow : Window
 
         try
         {
-            JsonIo.SaveToFile(Canvas.Document, dlg.FileName);
+            JsonIo.SaveToFile(Canvas.Document, dlg.FileName, Canvas.ExportProbes());
             _currentPath = dlg.FileName;
             Title = "Schematic Editor — " + Path.GetFileName(dlg.FileName);
             StatusText.Text = "Saved " + dlg.FileName;

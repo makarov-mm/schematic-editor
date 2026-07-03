@@ -82,12 +82,7 @@ public sealed class Wire : SchematicElement
         get
         {
             var r = Rect2.Empty;
-
-            foreach (Vec2 p in Points)
-            {
-                r = r.Include(p);
-            }
-
+            foreach (var p in Points) r = r.Include(p);
             return r;
         }
     }
@@ -95,12 +90,8 @@ public sealed class Wire : SchematicElement
     public double DistanceTo(Vec2 p)
     {
         double best = double.MaxValue;
-
         foreach (var (a, b) in Segments())
-        {
             best = Math.Min(best, p.DistanceToSegment(a, b));
-        }
-
         return best;
     }
 }

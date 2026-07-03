@@ -59,11 +59,8 @@ public sealed class AddElementCommand(SchematicElement element, string? name = n
     public void Execute(SchematicDocument doc)
     {
         doc.AddElement(element);
-
         if (element is SymbolInstance s && s.RefDes.EndsWith('?'))
-        {
             s.RefDes = doc.NextRefDes(s.Definition.RefPrefix);
-        }
     }
 
     public void Undo(SchematicDocument doc) => doc.RemoveElement(element);
@@ -76,18 +73,12 @@ public sealed class DeleteElementsCommand(IEnumerable<SchematicElement> elements
 
     public void Execute(SchematicDocument doc)
     {
-        foreach (SchematicElement e in _elements)
-        {
-            doc.RemoveElement(e);
-        }
+        foreach (var e in _elements) doc.RemoveElement(e);
     }
 
     public void Undo(SchematicDocument doc)
     {
-        foreach (SchematicElement e in _elements)
-        {
-            doc.AddElement(e);
-        }
+        foreach (var e in _elements) doc.AddElement(e);
     }
 }
 
@@ -101,19 +92,15 @@ public sealed class MoveElementsCommand(IEnumerable<SchematicElement> elements, 
 
     private void Shift(Vec2 d)
     {
-        foreach (SchematicElement e in _elements)
+        foreach (var e in _elements)
         {
             switch (e)
             {
                 case SymbolInstance s:
                     s.Position += d;
                     break;
-
                 case Wire w:
-                    for (int i = 0; i < w.Points.Count; i++)
-                    {
-                        w.Points[i] += d;
-                    }
+                    for (int i = 0; i < w.Points.Count; i++) w.Points[i] += d;
                     break;
             }
         }
@@ -146,28 +133,14 @@ public sealed class SetPropertyCommand(SymbolInstance symbol, bool isValue, stri
 
     public void Execute(SchematicDocument doc)
     {
-        if (isValue)
-        {
-            _oldText = symbol.Value; 
-            symbol.Value = newText;
-        }
-        else
-        {
-            _oldText = symbol.RefDes; 
-            symbol.RefDes = newText;
-        }
+        if (isValue) { _oldText = symbol.Value; symbol.Value = newText; }
+        else { _oldText = symbol.RefDes; symbol.RefDes = newText; }
     }
 
     public void Undo(SchematicDocument doc)
     {
-        if (isValue)
-        {
-            symbol.Value = _oldText;
-        }
-        else
-        {
-            symbol.RefDes = _oldText;
-        }
+        if (isValue) symbol.Value = _oldText;
+        else symbol.RefDes = _oldText;
     }
 }
 
@@ -179,17 +152,11 @@ public sealed class CompositeCommand(string name, IEnumerable<IEditCommand> comm
 
     public void Execute(SchematicDocument doc)
     {
-        foreach (IEditCommand c in _commands)
-        {
-            c.Execute(doc);
-        }
+        foreach (var c in _commands) c.Execute(doc);
     }
 
     public void Undo(SchematicDocument doc)
     {
-        for (int i = _commands.Count - 1; i >= 0; i--)
-        {
-            _commands[i].Undo(doc);
-        }
+        for (int i = _commands.Count - 1; i >= 0; i--) _commands[i].Undo(doc);
     }
 }

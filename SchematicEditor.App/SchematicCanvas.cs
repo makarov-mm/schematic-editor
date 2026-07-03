@@ -62,7 +62,7 @@ public sealed class SchematicCanvas : FrameworkElement
     /// <summary>A scope probe: voltage at a point, or current through a symbol.</summary>
     public sealed class Probe
     {
-        public required string Label { get; init; }
+        public required string Label { get; set; }
         public required Color Color { get; init; }
         public Vec2 Anchor { get; init; }
         public SymbolInstance? Symbol { get; init; }   // set = current probe
@@ -110,8 +110,20 @@ public sealed class SchematicCanvas : FrameworkElement
     public double SimTime => _sim?.Time ?? 0;
     public List<Probe> Probes { get; } = [];
 
-    /// <summary>When true, clicks in run mode place probes instead of toggling switches.</summary>
-    public bool ProbeArmed { get; set; }
+    /// <summary>When true, clicks place probes (works while editing and while running).</summary>
+    public bool ProbeArmed
+    {
+        get => _probeArmed;
+        set
+        {
+            if (_probeArmed == value) return;
+            _probeArmed = value;
+            SelectionOrToolChanged?.Invoke();
+            InvalidateVisual();
+        }
+    }
+
+    private bool _probeArmed;
 
     /// <summary>Raised after every simulation frame (batch of steps).</summary>
     public event Action? SimulationFrame;
@@ -172,6 +184,8 @@ public sealed class SchematicCanvas : FrameworkElement
         Undo = new UndoStack(doc);
         Document.Changed += OnDocumentChanged;
         _selection.Clear();
+        Probes.Clear();                 // anchored to the old document's geometry
+        SimulationFrame?.Invoke();      // repaint the (now empty) scope
         OnDocumentChanged();
         ZoomToFit();
     }
@@ -188,8 +202,37 @@ public sealed class SchematicCanvas : FrameworkElement
             foreach (var pin in net.Pins) _connectedPinKeys.Add(pin.World.Key());
         }
         _selection.RemoveWhere(e => Document.FindById(e.Id) == null);
+        RevalidateProbes();
         SelectionOrToolChanged?.Invoke();
         InvalidateVisual();
+    }
+
+    /// <summary>After any edit: drop probes whose net or symbol is gone, refresh net names.</summary>
+    private void RevalidateProbes()
+    {
+        bool changed = false;
+        for (int i = Probes.Count - 1; i >= 0; i--)
+        {
+            var p = Probes[i];
+            if (p.IsCurrent)
+            {
+                if (!Document.Symbols.Contains(p.Symbol!))
+                {
+                    Probes.RemoveAt(i);
+                    changed = true;
+                }
+            }
+            else if (_netlist.FindNetAt(p.Anchor) is { } net)
+            {
+                p.Label = $"V({net.Name})";
+            }
+            else
+            {
+                Probes.RemoveAt(i);
+                changed = true;
+            }
+        }
+        if (changed) SimulationFrame?.Invoke();
     }
 
     public NetlistResult CurrentNetlist => _netlist;
@@ -292,9 +335,24 @@ public sealed class SchematicCanvas : FrameworkElement
     private void ResolveProbes()
     {
         if (_sim is null) return;
-        foreach (var p in Probes)
-            if (!p.IsCurrent)
+        int before = Probes.Count;
+        for (int i = Probes.Count - 1; i >= 0; i--)
+        {
+            var p = Probes[i];
+            if (p.IsCurrent)
+            {
+                // Reference check: an Id lookup could silently hit a different
+                // symbol after a file load re-uses the same ids.
+                if (!Document.Symbols.Contains(p.Symbol!)) Probes.RemoveAt(i);
+            }
+            else
+            {
                 p.Node = _sim.ResolveNode(p.Anchor) ?? -1;
+                if (p.Node < 0) Probes.RemoveAt(i);
+            }
+        }
+        if (Probes.Count < before)
+            Status($"Removed {before - Probes.Count} probe(s) that no longer match the circuit.");
     }
 
     private void OnSimTick(object? sender, EventArgs e)
@@ -330,50 +388,10 @@ public sealed class SchematicCanvas : FrameworkElement
         SimulationFrame?.Invoke();
     }
 
-    /// <summary>Left click while the simulation runs: toggle switches or place probes.</summary>
+    /// <summary>Left click while the simulation runs: toggle switches.</summary>
     private void RunModeClick()
     {
         if (_sim is null) return;
-
-        if (ProbeArmed)
-        {
-            // Clicking an existing probe removes it.
-            var near = Probes.FirstOrDefault(p =>
-                !p.IsCurrent && p.Anchor.DistanceTo(_cursorWorld) <= HitTolerance * 2 ||
-                p.IsCurrent && p.Symbol!.Position.DistanceTo(_cursorWorld) <= HitTolerance * 2);
-            if (near is not null)
-            {
-                Probes.Remove(near);
-                InvalidateVisual();
-                SimulationFrame?.Invoke();
-                return;
-            }
-
-            var color = ProbePalette[Probes.Count % ProbePalette.Length];
-            if (HitTest(_cursorWorld) is SymbolInstance sym &&
-                sym.Definition.Pins.Count == 2 && sym.Definition.Name != "Ground")
-            {
-                Probes.Add(new Probe { Label = $"I({sym.RefDes})", Color = color, Symbol = sym });
-                Status($"Current probe on {sym.RefDes}.");
-            }
-            else
-            {
-                var anchor = Document.FindPinNear(_cursorWorld, HitTolerance * 2)
-                             ?? _cursorWorld.Snap(SchematicDocument.Grid);
-                int? node = _sim.ResolveNode(anchor);
-                if (node is null)
-                {
-                    Status("No net here — click a wire or a pin.");
-                    return;
-                }
-                string net = _sim.ResolveNetName(anchor) ?? "?";
-                Probes.Add(new Probe { Label = $"V({net})", Color = color, Anchor = anchor, Node = node.Value });
-                Status($"Voltage probe on {net}.");
-            }
-            InvalidateVisual();
-            SimulationFrame?.Invoke();
-            return;
-        }
 
         if (HitTest(_cursorWorld) is SymbolInstance { Definition.Name: "Switch" } sw)
         {
@@ -381,6 +399,82 @@ public sealed class SchematicCanvas : FrameworkElement
             InvalidateVisual();
         }
     }
+
+    /// <summary>Place or remove a probe at the cursor. Works in edit mode and in run mode.</summary>
+    private void ProbeClick()
+    {
+        // Clicking an existing probe removes it.
+        var near = Probes.FirstOrDefault(p =>
+            !p.IsCurrent && p.Anchor.DistanceTo(_cursorWorld) <= HitTolerance * 2 ||
+            p.IsCurrent && p.Symbol!.Position.DistanceTo(_cursorWorld) <= HitTolerance * 2);
+        if (near is not null)
+        {
+            Probes.Remove(near);
+            Status($"Removed probe {near.Label}.");
+            InvalidateVisual();
+            SimulationFrame?.Invoke();
+            return;
+        }
+
+        var color = ProbePalette[Probes.Count % ProbePalette.Length];
+        if (HitTest(_cursorWorld) is SymbolInstance sym &&
+            sym.Definition.Pins.Count == 2 && sym.Definition.Name != "Ground")
+        {
+            Probes.Add(new Probe { Label = $"I({sym.RefDes})", Color = color, Symbol = sym });
+            Status($"Current probe on {sym.RefDes}.");
+        }
+        else
+        {
+            var anchor = Document.FindPinNear(_cursorWorld, HitTolerance * 2)
+                         ?? _cursorWorld.Snap(SchematicDocument.Grid);
+            var net = _netlist.FindNetAt(anchor);
+            if (net is null)
+            {
+                Status("No net here — click a wire or a pin.");
+                return;
+            }
+            Probes.Add(new Probe
+            {
+                Label = $"V({net.Name})",
+                Color = color,
+                Anchor = anchor,
+                Node = _sim?.ResolveNode(anchor) ?? -1,
+            });
+            Status($"Voltage probe on {net.Name}.");
+        }
+        InvalidateVisual();
+        SimulationFrame?.Invoke();
+    }
+
+    /// <summary>Restore probes saved in a schematic file (colors are reassigned from the palette).</summary>
+    public void LoadProbes(IEnumerable<ProbeInfo>? saved)
+    {
+        Probes.Clear();
+        foreach (var info in saved ?? [])
+        {
+            var color = ProbePalette[Probes.Count % ProbePalette.Length];
+            if (info.Type == "I")
+            {
+                if (Document.FindById(info.SymbolId) is SymbolInstance s &&
+                    s.Definition.Pins.Count == 2)
+                    Probes.Add(new Probe { Label = $"I({s.RefDes})", Color = color, Symbol = s });
+            }
+            else
+            {
+                var anchor = new Vec2(info.X, info.Y);
+                if (_netlist.FindNetAt(anchor) is { } net)
+                    Probes.Add(new Probe { Label = $"V({net.Name})", Color = color, Anchor = anchor });
+            }
+        }
+        InvalidateVisual();
+        SimulationFrame?.Invoke();
+    }
+
+    /// <summary>Probes in their persistable form.</summary>
+    public List<ProbeInfo> ExportProbes() =>
+        [.. Probes.Select(p => p.IsCurrent
+            ? new ProbeInfo("I", SymbolId: p.Symbol!.Id)
+            : new ProbeInfo("V", p.Anchor.X, p.Anchor.Y))];
 
     // ----------------------------------------------------------------- tools
 
@@ -560,6 +654,12 @@ public sealed class SchematicCanvas : FrameworkElement
         }
 
         if (e.ChangedButton != MouseButton.Left) return;
+
+        if (ProbeArmed)
+        {
+            ProbeClick();
+            return;
+        }
 
         if (IsRunning)
         {
@@ -781,6 +881,9 @@ public sealed class SchematicCanvas : FrameworkElement
         bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         switch (e.Key)
         {
+            case Key.Escape when ProbeArmed:
+                ProbeArmed = false;
+                break;
             case Key.Escape:
                 if (Tool == EditorTool.Wire && _wirePoints.Count > 0) CancelWire();
                 else SetSelectTool();
@@ -913,7 +1016,7 @@ public sealed class SchematicCanvas : FrameworkElement
                 DrawFuseBlown(dc, sym);
         }
 
-        if (_sim is not null)
+        if (Probes.Count > 0)
             DrawProbeMarkers(dc);
 
         if (Tool == EditorTool.Place && _ghost != null)

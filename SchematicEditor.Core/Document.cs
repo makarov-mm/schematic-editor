@@ -35,15 +35,12 @@ public sealed class SchematicDocument
     public string NextRefDes(string prefix)
     {
         int max = 0;
-
-        foreach (SymbolInstance s in Symbols)
+        foreach (var s in Symbols)
         {
             if (!s.RefDes.StartsWith(prefix, StringComparison.Ordinal)) continue;
-
             if (int.TryParse(s.RefDes.AsSpan(prefix.Length), out int n))
                 max = Math.Max(max, n);
         }
-
         return prefix + (max + 1);
     }
 
@@ -54,16 +51,14 @@ public sealed class SchematicDocument
         return r;
     }
 
+    // --------------------------------------------------- connectivity queries
+
     /// <summary>All pin connection points in world space.</summary>
     public IEnumerable<Vec2> AllPinPoints()
     {
         foreach (var s in Symbols)
-        {
             foreach (var (_, world) in s.WorldPins())
-            {
                 yield return world;
-            }
-        }
     }
 
     /// <summary>Nearest pin within <paramref name="radius"/>, or null. Used for magnet snapping.</summary>
@@ -71,18 +66,11 @@ public sealed class SchematicDocument
     {
         Vec2? best = null;
         double bestDist = radius;
-
-        foreach (Vec2 pin in AllPinPoints())
+        foreach (var pin in AllPinPoints())
         {
             double d = pin.DistanceTo(p);
-
-            if (d <= bestDist)
-            {
-                bestDist = d; 
-                best = pin;
-            }
+            if (d <= bestDist) { bestDist = d; best = pin; }
         }
-
         return best;
     }
 
@@ -92,23 +80,20 @@ public sealed class SchematicDocument
     /// </summary>
     public bool IsConnectionPoint(Vec2 p, double tol = 0.05)
     {
-        (long, long) key = p.Key();
-
-        foreach (Vec2 pin in AllPinPoints())
+        var key = p.Key();
+        foreach (var pin in AllPinPoints())
             if (pin.Key() == key)
                 return true;
 
-        foreach (Wire w in Wires)
+        foreach (var w in Wires)
         {
-            foreach (Vec2 v in w.Points)
+            foreach (var v in w.Points)
                 if (v.Key() == key)
                     return true;
-
             foreach (var (a, b) in w.Segments())
                 if (p.IsOnSegment(a, b, tol))
                     return true;
         }
-
         return false;
     }
 

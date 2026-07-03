@@ -19,6 +19,21 @@ public sealed class NetlistResult
 {
     public List<Net> Nets { get; } = [];
 
+    /// <summary>Find the net that owns the given point (a pin, a wire vertex, or a segment interior).</summary>
+    public Net? FindNetAt(Vec2 point)
+    {
+        var key = point.Key();
+        foreach (var net in Nets)
+        {
+            if (net.Pins.Any(p => p.World.Key() == key)) return net;
+            foreach (var w in net.Wires)
+                if (w.Points.Any(v => v.Key() == key) ||
+                    w.Segments().Any(s => point.IsOnSegment(s.A, s.B)))
+                    return net;
+        }
+        return null;
+    }
+
     /// <summary>Wire endpoints that connect to nothing (for ERC and junction rendering).</summary>
     public List<Vec2> DanglingWireEnds { get; } = [];
 

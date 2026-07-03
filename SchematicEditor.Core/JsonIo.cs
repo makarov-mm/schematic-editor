@@ -3,6 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace SchematicEditor.Core;
 
+/// <summary>A saved scope probe: Type "V" (anchor point) or "I" (symbol id).</summary>
+public sealed record ProbeInfo(string Type, double X = 0, double Y = 0, int SymbolId = 0);
+
 /// <summary>Native document format (.schem.json). Plain DTOs, System.Text.Json, no dependencies.</summary>
 public static class JsonIo
 {
@@ -13,7 +16,8 @@ public static class JsonIo
     private sealed record WireDto(int Id, double[] Points);
 
     private sealed record DocumentDto(
-        string Format, int Version, List<SymbolDto> Symbols, List<WireDto> Wires);
+        string Format, int Version, List<SymbolDto> Symbols, List<WireDto> Wires,
+        List<ProbeInfo>? Probes = null);
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -21,7 +25,7 @@ public static class JsonIo
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
     };
 
-    public static string Save(SchematicDocument doc)
+    public static string Save(SchematicDocument doc, IReadOnlyList<ProbeInfo>? probes = null)
     {
         var dto = new DocumentDto(
             "schematic-editor", 1,
@@ -29,15 +33,19 @@ public static class JsonIo
                 s.Id, s.Definition.Name, s.Position.X, s.Position.Y,
                 (int)s.Rotation, s.Mirror, s.RefDes, s.Value, s.StateOn)).ToList(),
             doc.Wires.Select(w => new WireDto(
-                w.Id, w.Points.SelectMany(p => new[] { p.X, p.Y }).ToArray())).ToList());
+                w.Id, w.Points.SelectMany(p => new[] { p.X, p.Y }).ToArray())).ToList(),
+            probes is { Count: > 0 } ? [.. probes] : null);
 
         return JsonSerializer.Serialize(dto, Options);
     }
 
-    public static void SaveToFile(SchematicDocument doc, string path) =>
-        File.WriteAllText(path, Save(doc));
+    public static void SaveToFile(SchematicDocument doc, string path,
+        IReadOnlyList<ProbeInfo>? probes = null) =>
+        File.WriteAllText(path, Save(doc, probes));
 
-    public static SchematicDocument Load(string json)
+    public static SchematicDocument Load(string json) => Load(json, out _);
+
+    public static SchematicDocument Load(string json, out List<ProbeInfo> probes)
     {
         var dto = JsonSerializer.Deserialize<DocumentDto>(json, Options)
             ?? throw new InvalidDataException("Empty or invalid document.");
@@ -69,9 +77,13 @@ public static class JsonIo
             doc.AddElement(new Wire(pts) { Id = w.Id });
         }
 
+        probes = dto.Probes ?? [];
         return doc;
     }
 
     public static SchematicDocument LoadFromFile(string path) =>
         Load(File.ReadAllText(path));
+
+    public static SchematicDocument LoadFromFile(string path, out List<ProbeInfo> probes) =>
+        Load(File.ReadAllText(path), out probes);
 }

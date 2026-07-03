@@ -1,0 +1,168 @@
+{
+  "Format": "schematic-editor",
+  "Version": 1,
+  "Symbols": [
+    {
+      "Id": 1,
+      "Symbol": "ACSource",
+      "RefDes": "V1",
+      "Value": "5V 50Hz"
+    },
+    {
+      "Id": 2,
+      "Symbol": "Resistor",
+      "X": 60,
+      "Y": -40,
+      "RefDes": "R1",
+      "Value": "3.3"
+    },
+    {
+      "Id": 3,
+      "Symbol": "Resistor",
+      "X": 120,
+      "Y": -40,
+      "RefDes": "R2",
+      "Value": "22"
+    },
+    {
+      "Id": 4,
+      "Symbol": "Switch",
+      "X": 120,
+      "Y": -70,
+      "RefDes": "S1",
+      "Value": ""
+    },
+    {
+      "Id": 5,
+      "Symbol": "Inductor",
+      "X": 180,
+      "Y": -40,
+      "RefDes": "L1",
+      "Value": "100m"
+    },
+    {
+      "Id": 6,
+      "Symbol": "Capacitor",
+      "X": 240,
+      "Rotation": 1,
+      "RefDes": "C1",
+      "Value": "100u"
+    },
+    {
+      "Id": 7,
+      "Symbol": "Ground",
+      "X": 120,
+      "Y": 90,
+      "RefDes": "GND1",
+      "Value": ""
+    }
+  ],
+  "Wires": [
+    {
+      "Id": 8,
+      "Points": [
+        0,
+        -20,
+        0,
+        -40,
+        40,
+        -40
+      ]
+    },
+    {
+      "Id": 9,
+      "Points": [
+        80,
+        -40,
+        100,
+        -40
+      ]
+    },
+    {
+      "Id": 10,
+      "Points": [
+        140,
+        -40,
+        160,
+        -40
+      ]
+    },
+    {
+      "Id": 11,
+      "Points": [
+        100,
+        -70,
+        100,
+        -40
+      ]
+    },
+    {
+      "Id": 12,
+      "Points": [
+        140,
+        -70,
+        140,
+        -40
+      ]
+    },
+    {
+      "Id": 13,
+      "Points": [
+        200,
+        -40,
+        240,
+        -40,
+        240,
+        -20
+      ]
+    },
+    {
+      "Id": 14,
+      "Points": [
+        240,
+        20,
+        240,
+        60
+      ]
+    },
+    {
+      "Id": 15,
+      "Points": [
+        0,
+        20,
+        0,
+        60
+      ]
+    },
+    {
+      "Id": 16,
+      "Points": [
+        0,
+        60,
+        240,
+        60
+      ]
+    },
+    {
+      "Id": 17,
+      "Points": [
+        120,
+        60,
+        120,
+        90
+      ]
+    }
+  ],
+  "Probes": [
+    {
+      "Type": "V",
+      "X": 20,
+      "Y": -40
+    },
+    {
+      "Type": "V",
+      "X": 220,
+      "Y": -40
+    }
+  ]
+}

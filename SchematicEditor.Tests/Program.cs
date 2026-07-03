@@ -419,6 +419,32 @@ Console.WriteLine("Simulation, ground merging:");
         $"separate grounds form one reference (got {top:0.###})");
 }
 
+// -------------------------------------------------- probe persistence
+Console.WriteLine("JSON, probe roundtrip:");
+{
+    var d = SimDoc((doc, P, W) =>
+    {
+        var v = P("VSource", new Vec2(0, 0), Rotation.R0);
+        var r = P("Resistor", new Vec2(60, 0), Rotation.R90);
+        P("Ground", new Vec2(0, 60), Rotation.R0);
+        W([new Vec2(0, -20), new Vec2(0, -40), new Vec2(60, -40), new Vec2(60, -20)]);
+        W([new Vec2(60, 20), new Vec2(60, 60), new Vec2(0, 60)]);
+        W([new Vec2(0, 20), new Vec2(0, 60)]);
+    });
+    var rsym = d.Symbols.First(s2 => s2.Definition.Name == "Resistor");
+    var saved = JsonIo.Save(d, [new ProbeInfo("V", 60, -40), new ProbeInfo("I", SymbolId: rsym.Id)]);
+    var loaded = JsonIo.Load(saved, out var probes);
+    Check(probes.Count == 2, $"two probes roundtrip (got {probes.Count})");
+    Check(probes[0].Type == "V" && Math.Abs(probes[0].X - 60) < 1e-9, "voltage probe anchor kept");
+    Check(probes[1].Type == "I" && probes[1].SymbolId == rsym.Id, "current probe symbol id kept");
+    var legacy = JsonIo.Load(JsonIo.Save(d), out var none);
+    Check(none.Count == 0 && legacy.Symbols.Count() == 3, "probe-free files load fine");
+
+    var net = NetlistExtractor.Extract(d).FindNetAt(new Vec2(30, -40));
+    Check(net != null, "FindNetAt hits a segment interior");
+    Check(NetlistExtractor.Extract(d).FindNetAt(new Vec2(300, 300)) == null, "FindNetAt misses empty space");
+}
+
 // ------------------------------------------------- build-time diagnostics
 Console.WriteLine("Simulation, diagnostics:");
 {

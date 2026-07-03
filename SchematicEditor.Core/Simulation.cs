@@ -476,44 +476,12 @@ public sealed class CircuitSimulator
     // ----------------------------------------------------------------- probes
 
     /// <summary>Resolve the MNA node index that owns the given point (0 = ground), or null.</summary>
-    public int? ResolveNode(Vec2 point)
-    {
-        var key = point.Key();
-        foreach (var net in _netlist.Nets)
-        {
-            bool hit = net.Pins.Any(p => p.World.Key() == key);
-
-            if (!hit)
-            {
-                foreach (var w in net.Wires)
-                {
-                    if (w.Points.Any(v => v.Key() == key) ||
-                        w.Segments().Any(s => point.IsOnSegment(s.A, s.B)))
-                    {
-                        hit = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hit && _netNode.TryGetValue(net, out int node))
-                return node;
-        }
-        return null;
-    }
+    public int? ResolveNode(Vec2 point) =>
+        _netlist.FindNetAt(point) is { } net && _netNode.TryGetValue(net, out int node)
+            ? node : null;
 
     /// <summary>Name of the net that owns the given point, or null.</summary>
-    public string? ResolveNetName(Vec2 point)
-    {
-        int? node = ResolveNode(point);
-        if (node == null) return null;
-
-        foreach (var (net, idx) in _netNode)
-            if (idx == node)
-                return net.Name;
-
-        return null;
-    }
+    public string? ResolveNetName(Vec2 point) => _netlist.FindNetAt(point)?.Name;
 
     public double GetNodeVoltage(int node) => node == 0 ? 0.0 : _nodeVoltage[node];
 
