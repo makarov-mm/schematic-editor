@@ -4,7 +4,7 @@ A minimal electrical schematic editor in C# / WPF with **zero external dependenc
 no NuGet packages, just .NET 10 / C# 14 and hand-written everything: rendering, netlist
 extraction, ERC, JSON persistence, DXF and SVG export.
 
-![Demo circuit](docs/demo.svg)
+![Demo circuit](docs/screenshot.png)
 
 ## Features
 
