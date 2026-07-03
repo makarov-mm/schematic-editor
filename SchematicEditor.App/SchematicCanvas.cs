@@ -31,6 +31,9 @@ public sealed class SchematicCanvas : FrameworkElement
     public event Action? SelectionOrToolChanged;
 
     private readonly HashSet<SchematicElement> _selection = [];
+
+    /// <summary>Net of the single selected wire - drawn highlighted for cross-probing.</summary>
+    public Net? SelectedNet => _selection.Count == 1 && _selection.First() is Wire w && w.Points.Count > 0 ? _netlist.FindNetAt(w.Points[0]) : null;
     public IReadOnlyCollection<SchematicElement> Selection => _selection;
 
     // View transform: screen = world * _zoom + _pan.
@@ -157,6 +160,7 @@ public sealed class SchematicCanvas : FrameworkElement
 
     private static readonly Pen SymbolPen = MakePen(SymbolBrush, 1.0);
     private static readonly Pen WirePen = MakePen(WireBrush, 0.9);
+    private static readonly Pen NetHighlightPen = MakePen(Freeze(new SolidColorBrush(Color.FromArgb(0x90, 0xff, 0x9e, 0x1b))), 3.2);
     private static readonly Pen SelPen = MakePen(SelBrush, 1.4);
     private static readonly Pen GhostPen = MakePen(GhostBrush, 1.0);
     private static readonly Pen DanglingPen = MakePen(DanglingBrush, 0.8);
@@ -851,12 +855,116 @@ public sealed class SchematicCanvas : FrameworkElement
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
+        if (IsRunning && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && HitTest(_cursorWorld) is SymbolInstance sym && sym.Definition.Name is "Resistor" or "Capacitor" or "Inductor")
+        {
+            TweakValue(sym, e.Delta > 0);
+            e.Handled = true;
+            return;
+        }
+
         var screen = e.GetPosition(this);
         var anchor = ToWorld(screen);
         double factor = e.Delta > 0 ? 1.2 : 1.0 / 1.2;
         _zoom = Math.Clamp(_zoom * factor, 0.05, 100.0);
         _pan = new Vector(screen.X - anchor.X * _zoom, screen.Y - anchor.Y * _zoom);
         InvalidateVisual();
+    }
+
+    /// <summary>Step a component value along the 1 / 2.2 / 4.7 ladder during a live run.</summary>
+    private void TweakValue(SymbolInstance sym, bool up)
+    {
+        if (_sim is null || !Units.TryParse(sym.Value, out double v) || v <= 0) { return; }
+
+        double[] ladder = [1.0, 2.2, 4.7];
+        double p = Math.Pow(10, Math.Floor(Math.Log10(v)));
+        double m = v / p;
+        int idx = 0;
+        for (int i = 1; i < ladder.Length; i++)
+        {
+            if (Math.Abs(Math.Log(m / ladder[i])) < Math.Abs(Math.Log(m / ladder[idx]))) { idx = i; }
+        }
+        idx += up ? 1 : -1;
+        if (idx >= ladder.Length) { idx = 0; p *= 10; }
+        if (idx < 0) { idx = ladder.Length - 1; p /= 10; }
+        double next = Math.Clamp(ladder[idx] * p, 1e-12, 1e12);
+
+        sym.Value = FormatValueShort(next);
+        if (_sim.UpdateComponentValue(sym))
+        {
+            Status($"{sym.RefDes} = {sym.Value}");
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>Engineering notation without a unit: 4700 -> "4.7k", 1e-7 -> "100n".</summary>
+    private static string FormatValueShort(double v)
+    {
+        (double m, string suffix) = Math.Abs(v) switch
+        {
+            >= 1e9 => (1e-9, "G"),
+            >= 1e6 => (1e-6, "Meg"),
+            >= 1e3 => (1e-3, "k"),
+            >= 1 => (1.0, ""),
+            >= 1e-3 => (1e3, "m"),
+            >= 1e-6 => (1e6, "u"),
+            >= 1e-9 => (1e9, "n"),
+            _ => (1e12, "p"),
+        };
+        return (v * m).ToString("0.###", CultureInfo.InvariantCulture) + suffix;
+    }
+
+    /// <summary>
+    /// Frequency sweep over all voltage probes for the Bode plot. Uses the running simulator
+    /// when available (so switch and diode states match what is on screen), otherwise builds
+    /// a temporary one. Returns null with an error message when the sweep cannot run.
+    /// </summary>
+    public List<(string Label, Color Color, double[] Freq, System.Numerics.Complex[] Response)>? ComputeAcSweep(double fMin, double fMax, int pointsPerDecade, out string? error)
+    {
+        error = null;
+        var voltageProbes = Probes.Where(p => !p.IsCurrent).ToList();
+        if (voltageProbes.Count == 0)
+        {
+            error = "Place at least one voltage probe first.";
+            return null;
+        }
+
+        CircuitSimulator? sim = _sim;
+        if (sim is null)
+        {
+            sim = CircuitSimulator.Build(Document, _netlist, out var problems);
+            if (sim is null)
+            {
+                error = string.Join(" ", problems);
+                return null;
+            }
+        }
+
+        int decades = (int)Math.Ceiling(Math.Log10(fMax / fMin));
+        int count = decades * pointsPerDecade + 1;
+        double[] freq = new double[count];
+        for (int i = 0; i < count; i++) { freq[i] = fMin * Math.Pow(10, (double)i / pointsPerDecade); }
+
+        var nodes = voltageProbes.Select(p => sim.ResolveNode(p.Anchor) ?? -1).ToList();
+        var data = voltageProbes.Select(_ => new System.Numerics.Complex[count]).ToList();
+
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var x = sim.SolveAc(freq[i]);
+                for (int k = 0; k < voltageProbes.Count; k++)
+                {
+                    data[k][i] = nodes[k] >= 0 ? sim.GetAcNodeVoltage(x, nodes[k]) : default;
+                }
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            error = ex.Message;
+            return null;
+        }
+
+        return [.. voltageProbes.Select((p, k) => (p.Label, p.Color, freq, data[k]))];
     }
 
     // --------------------------------------------------------------- keyboard
@@ -981,6 +1089,12 @@ public sealed class SchematicCanvas : FrameworkElement
         dc.PushTransform(new MatrixTransform(m));
 
         DrawGrid(dc);
+
+        if (SelectedNet is { } net)
+        {
+            foreach (var wire in net.Wires) { DrawWire(dc, wire, NetHighlightPen, Vec2.Zero); }
+            foreach (var pin in net.Pins) { dc.DrawEllipse(null, NetHighlightPen, new Point(pin.World.X, pin.World.Y), 2.6, 2.6); }
+        }
 
         foreach (var wire in Document.Wires)
         {

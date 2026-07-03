@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace SchematicEditor.Core;
 
 /// <summary>
@@ -501,4 +503,146 @@ public sealed class CircuitSimulator
     }
 
     public bool IsFuseBlown(SymbolInstance fuse) => _bySymbolId.TryGetValue(fuse.Id, out var e) && e.FuseBlown;
+
+    /// <summary>
+    /// Small-signal frequency-domain solve (SPICE-style AC analysis) at a single frequency.
+    /// The same MNA topology is stamped with complex immittances: jwC for capacitors, jwL for
+    /// inductor branches. Nonlinear elements are linearized around their present state: diodes
+    /// use their current on/off segment, switches their current position. AC sources drive the
+    /// circuit with their amplitude; DC sources become shorts (their branch equation with a
+    /// zero right-hand side), exactly as a linear superposition analysis expects.
+    /// Returns node voltages followed by branch currents, or throws on a singular matrix.
+    /// </summary>
+    public Complex[] SolveAc(double frequency)
+    {
+        int n = _nodeCount + _branchCount;
+        Complex[,] a = new Complex[n, n];
+        Complex[] rhs = new Complex[n];
+        double w = 2.0 * Math.PI * frequency;
+
+        for (int i = 0; i < _nodeCount; i++)
+        {
+            a[i, i] += Gmin;
+        }
+
+        void StampG(int na, int nb, Complex g)
+        {
+            if (na != 0) { a[na - 1, na - 1] += g; }
+            if (nb != 0) { a[nb - 1, nb - 1] += g; }
+            if (na != 0 && nb != 0)
+            {
+                a[na - 1, nb - 1] -= g;
+                a[nb - 1, na - 1] -= g;
+            }
+        }
+
+        void StampBranchRows(int na, int nb, int k)
+        {
+            if (na != 0) { a[na - 1, k] += 1; a[k, na - 1] += 1; }
+            if (nb != 0) { a[nb - 1, k] -= 1; a[k, nb - 1] -= 1; }
+        }
+
+        foreach (Element e in _elements)
+        {
+            switch (e.Kind)
+            {
+                case Kind.Resistor or Kind.Lamp:
+                    StampG(e.NodeA, e.NodeB, 1.0 / e.Value);
+                    break;
+
+                case Kind.Fuse:
+                    StampG(e.NodeA, e.NodeB, e.FuseBlown ? Gmin : 1.0 / e.Value);
+                    break;
+
+                case Kind.Switch:
+                    StampG(e.NodeA, e.NodeB, e.Symbol.StateOn ? 1.0 / SwitchOnR : Gmin);
+                    break;
+
+                case Kind.Capacitor:
+                    StampG(e.NodeA, e.NodeB, new Complex(0, w * e.Value));
+                    break;
+
+                case Kind.Diode:
+                    StampG(e.NodeA, e.NodeB, e.DiodeOn ? 1.0 / DiodeRon : Gmin);
+                    break;
+
+                case Kind.Inductor:
+                {
+                    int k = _nodeCount + e.Branch;
+                    StampBranchRows(e.NodeA, e.NodeB, k);
+                    a[k, k] -= new Complex(0, w * e.Value);
+                    break;
+                }
+
+                case Kind.SourceDc or Kind.SourceAc:
+                {
+                    int k = _nodeCount + e.Branch;
+                    StampBranchRows(e.NodeA, e.NodeB, k);
+                    rhs[k] = e.Kind == Kind.SourceAc ? e.Value : Complex.Zero;
+                    break;
+                }
+            }
+        }
+
+        // Complex Gaussian elimination with partial pivoting by magnitude.
+        Complex[] x = new Complex[n];
+        for (int col = 0; col < n; col++)
+        {
+            int pivot = col;
+            double best = a[col, col].Magnitude;
+            for (int r = col + 1; r < n; r++)
+            {
+                double v = a[r, col].Magnitude;
+                if (v > best) { best = v; pivot = r; }
+            }
+            if (best < 1e-14)
+            {
+                throw new InvalidOperationException("Singular matrix: AC analysis has no unique solution.");
+            }
+
+            if (pivot != col)
+            {
+                for (int c = col; c < n; c++) { (a[col, c], a[pivot, c]) = (a[pivot, c], a[col, c]); }
+                (rhs[col], rhs[pivot]) = (rhs[pivot], rhs[col]);
+            }
+
+            for (int r = col + 1; r < n; r++)
+            {
+                Complex f = a[r, col] / a[col, col];
+                if (f == Complex.Zero) { continue; }
+                for (int c = col; c < n; c++) { a[r, c] -= f * a[col, c]; }
+                rhs[r] -= f * rhs[col];
+            }
+        }
+
+        for (int r = n - 1; r >= 0; r--)
+        {
+            Complex sum = rhs[r];
+            for (int c = r + 1; c < n; c++) { sum -= a[r, c] * x[c]; }
+            x[r] = sum / a[r, r];
+        }
+
+        return x;
+    }
+
+    /// <summary>
+    /// Re-parse the value of a live component (R, C, L) while the simulation runs, without a
+    /// rebuild - reactive state and time carry straight through the change. Returns false when
+    /// the symbol is not simulated, is of an unsupported kind, or its value does not parse.
+    /// </summary>
+    public bool UpdateComponentValue(SymbolInstance sym)
+    {
+        if (!_bySymbolId.TryGetValue(sym.Id, out Element? e)) { return false; }
+        if (e.Kind is not (Kind.Resistor or Kind.Capacitor or Kind.Inductor)) { return false; }
+        if (!Units.TryParse(sym.Value, out double parsed) || parsed <= 0) { return false; }
+        e.Value = parsed;
+        return true;
+    }
+
+    /// <summary>Node voltage phasor from a <see cref="SolveAc"/> solution (node 0 is ground).</summary>
+    public Complex GetAcNodeVoltage(Complex[] solution, int node) => node == 0 ? Complex.Zero : solution[node - 1];
+
+    /// <summary>Convenience: complex voltage at a point for one frequency, or null when the point hits no net.</summary>
+    public Complex? GetAcVoltageAt(double frequency, Vec2 point) => ResolveNode(point) is { } node ? GetAcNodeVoltage(SolveAc(frequency), node) : null;
+
 }

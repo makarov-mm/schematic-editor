@@ -399,6 +399,61 @@ Console.WriteLine("Simulation, diode rectifier:");
 }
 
 // Two separate ground nets
+// AC analysis
+Console.WriteLine("AC analysis:");
+{
+    // RC low-pass: |Vc| at the corner frequency must be 1/sqrt(2) of the input.
+    var d = SimDoc((doc, P, W) =>
+    {
+        var v = P("ACSource", new Vec2(0, 0), Rotation.R0);
+        v.Value = "1V 50Hz";
+        var r = P("Resistor", new Vec2(60, -40), Rotation.R0);
+        r.Value = "1k";
+        var c = P("Capacitor", new Vec2(120, 0), Rotation.R90);
+        c.Value = "1u";
+        P("Ground", new Vec2(0, 60), Rotation.R0);
+        W([new Vec2(0, -20), new Vec2(0, -40), new Vec2(40, -40)]);
+        W([new Vec2(80, -40), new Vec2(120, -40), new Vec2(120, -20)]);
+        W([new Vec2(120, 20), new Vec2(120, 60), new Vec2(0, 60)]);
+        W([new Vec2(0, 20), new Vec2(0, 60)]);
+    });
+    var sim = MustBuild(d);
+    double fc = 1.0 / (2.0 * Math.PI * 1e3 * 1e-6);
+    double mag = sim.GetAcVoltageAt(fc, new Vec2(120, -40))!.Value.Magnitude;
+    Check(Math.Abs(mag - 1.0 / Math.Sqrt(2)) < 1e-3, $"RC low-pass: -3 dB at fc (got {mag:0.####})");
+    double magLow = sim.GetAcVoltageAt(fc / 100, new Vec2(120, -40))!.Value.Magnitude;
+    Check(magLow > 0.999, $"RC low-pass: passband flat (got {magLow:0.####})");
+    double phase = sim.GetAcVoltageAt(fc, new Vec2(120, -40))!.Value.Phase * 180.0 / Math.PI;
+    Check(Math.Abs(phase + 45) < 0.5, $"RC low-pass: -45 deg at fc (got {phase:0.#})");
+}
+{
+    // Series RLC: at resonance the capacitor sees Q times the source amplitude.
+    var d = SimDoc((doc, P, W) =>
+    {
+        var v = P("ACSource", new Vec2(0, 0), Rotation.R0);
+        v.Value = "5V 50Hz";
+        var r = P("Resistor", new Vec2(60, -40), Rotation.R0);
+        r.Value = "3.3";
+        var l = P("Inductor", new Vec2(120, -40), Rotation.R0);
+        l.Value = "100m";
+        var c = P("Capacitor", new Vec2(180, 0), Rotation.R90);
+        c.Value = "100u";
+        P("Ground", new Vec2(0, 60), Rotation.R0);
+        W([new Vec2(0, -20), new Vec2(0, -40), new Vec2(40, -40)]);
+        W([new Vec2(80, -40), new Vec2(100, -40)]);
+        W([new Vec2(140, -40), new Vec2(180, -40), new Vec2(180, -20)]);
+        W([new Vec2(180, 20), new Vec2(180, 60), new Vec2(0, 60)]);
+        W([new Vec2(0, 20), new Vec2(0, 60)]);
+    });
+    var sim = MustBuild(d);
+    double f0 = 1.0 / (2.0 * Math.PI * Math.Sqrt(0.1 * 100e-6));
+    double q = Math.Sqrt(0.1 / 100e-6) / 3.3;
+    double mag = sim.GetAcVoltageAt(f0, new Vec2(180, -40))!.Value.Magnitude;
+    Check(Math.Abs(mag - 5.0 * q) < 0.2, $"RLC: |Vc(f0)| = Q*A = {5.0 * q:0.#} (got {mag:0.#})");
+    double magOff = sim.GetAcVoltageAt(f0 * 4, new Vec2(180, -40))!.Value.Magnitude;
+    Check(magOff < 2, $"RLC: response falls off-resonance (got {magOff:0.##})");
+}
+
 Console.WriteLine("Simulation, ground merging:");
 {
     var d = SimDoc((doc, P, W) =>

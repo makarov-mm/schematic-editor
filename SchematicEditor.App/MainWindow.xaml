@@ -26,6 +26,7 @@
         <Geometry x:Key="IconStop">M4,4 H12 V12 H4 Z</Geometry>
         <Geometry x:Key="IconReset">M12.8,5.2 A5.2,5.2 0 1 0 13.2,9.5 M13.4,2 L12.8,5.4 L9.4,4.8</Geometry>
         <Geometry x:Key="IconProbe">M2.5,13.5 L10.2,5.8 M11.5,4.5 m-1.9,0 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0</Geometry>
+        <Geometry x:Key="IconBode">M2,2 V14 H14 M3.5,11.5 C6,11.5 6.5,3.5 9,3.5 C11,3.5 11.5,7 13.5,7</Geometry>
         <Geometry x:Key="IconProbeClear">M2.5,13.5 L10.2,5.8 M11.5,4.5 m-1.9,0 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0 M11,10.5 L15,14.5 M15,10.5 L11,14.5</Geometry>
 
         <Style x:Key="IconPath" TargetType="Path">
@@ -253,6 +254,11 @@
                 <Button x:Name="ClearProbesButton" Style="{StaticResource ToolButton}"
                         Click="OnClearProbes" IsEnabled="False" ToolTip="Remove all probes">
                     <Path Style="{StaticResource IconPath}" Data="{StaticResource IconProbeClear}"/>
+                </Button>
+                <Button x:Name="AcButton" Style="{StaticResource ToolButton}"
+                        Click="OnAcAnalysis" IsEnabled="False"
+                        ToolTip="AC analysis: frequency response at the voltage probes (1 Hz – 100 kHz)">
+                    <Path Style="{StaticResource IconPath}" Data="{StaticResource IconBode}"/>
                 </Button>
             </StackPanel>
         </Border>

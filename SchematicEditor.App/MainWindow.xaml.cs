@@ -35,7 +35,10 @@ public partial class MainWindow : Window
         Canvas.SelectionOrToolChanged += UpdateToolbar;
         Canvas.SimulationStateChanged += OnSimulationStateChanged;
         Canvas.SimulationFrame += () =>
+        {
             ClearProbesButton.IsEnabled = Canvas.Probes.Count > 0;
+            AcButton.IsEnabled = Canvas.Probes.Any(p => !p.IsCurrent);
+        };
         Scope.Attach(Canvas);
         UpdateToolbar();
 
@@ -74,7 +77,7 @@ public partial class MainWindow : Window
 
         (ToolText.Text, HintText.Text) = running
             ? ("Running",
-                "Click a switch to toggle it  •  probe tool: click a wire or component  •  Esc stop")
+                "Click a switch to toggle it  •  Shift+wheel over R/C/L to tweak its value  •  Esc stop")
             : Canvas.ProbeArmed
             ? ("Probe",
                 "Click a wire/pin for a voltage probe, a component body for current  •  click a probe to remove it  •  Esc exit")
@@ -151,6 +154,18 @@ public partial class MainWindow : Window
             Scope.WindowSeconds = sec;
             Scope.InvalidateVisual();
         }
+        Canvas.Focus();
+    }
+
+    private void OnAcAnalysis(object sender, RoutedEventArgs e)
+    {
+        var traces = Canvas.ComputeAcSweep(1.0, 100e3, 48, out string? error);
+        if (traces is null)
+        {
+            StatusText.Text = error ?? "AC analysis failed.";
+            return;
+        }
+        new BodeWindow(traces) { Owner = this }.Show();
         Canvas.Focus();
     }
 
