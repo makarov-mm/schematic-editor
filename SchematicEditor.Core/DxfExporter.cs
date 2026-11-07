@@ -4,178 +4,196 @@ using System.Text;
 namespace SchematicEditor.Core;
 
 /// <summary>
-/// Minimal hand-written DXF R12 (AC1009) ASCII exporter — no external libraries.
-/// R12 was chosen because virtually every CAD package can import it.
-/// Editor Y axis points down; DXF Y points up, so Y is negated on export.
-/// All numbers use InvariantCulture (DXF requires '.' as decimal separator).
+/// A hand-written DXF R12 (AC1009) exporter: R12 is the version every CAD package imports. The
+/// editor's Y axis points down and DXF's up, so Y is negated. Numbers use '.' as the decimal
+/// separator, and characters outside ASCII are written as \U+XXXX, as R12 has no Unicode.
 /// </summary>
 public static class DxfExporter
 {
-    private const string LayerSymbols = "SYMBOLS";
-    private const string LayerWires = "WIRES";
-    private const string LayerText = "TEXT";
+    private const string SymbolLayer = "SYMBOLS";
+    private const string WireLayer = "WIRES";
+    private const string TextLayer = "TEXT";
+    private const double LabelHeight = 5;
 
     public static string Export(SchematicDocument doc)
     {
-        var sb = new StringBuilder();
+        var dxf = new DxfWriter();
 
-        // HEADER
-        Pair(sb, 0, "SECTION"); Pair(sb, 2, "HEADER");
-        Pair(sb, 9, "$ACADVER"); Pair(sb, 1, "AC1009");
-        Pair(sb, 0, "ENDSEC");
+        dxf.BeginSection("HEADER");
+        dxf.Pair(9, "$ACADVER");
+        dxf.Pair(1, "AC1009");
+        dxf.EndSection();
 
-        // TABLES (layers)
-        Pair(sb, 0, "SECTION"); Pair(sb, 2, "TABLES");
-        Pair(sb, 0, "TABLE"); Pair(sb, 2, "LAYER"); Pair(sb, 70, "3");
-        Layer(sb, LayerSymbols, 7);
-        Layer(sb, LayerWires, 5);
-        Layer(sb, LayerText, 3);
-        Pair(sb, 0, "ENDTAB");
-        Pair(sb, 0, "ENDSEC");
+        dxf.BeginSection("TABLES");
+        dxf.Pair(0, "TABLE");
+        dxf.Pair(2, "LAYER");
+        dxf.Pair(70, 3);
+        dxf.Layer(SymbolLayer, color: 7);
+        dxf.Layer(WireLayer, color: 5);
+        dxf.Layer(TextLayer, color: 3);
+        dxf.Pair(0, "ENDTAB");
+        dxf.EndSection();
 
-        // ENTITIES
-        Pair(sb, 0, "SECTION"); Pair(sb, 2, "ENTITIES");
+        dxf.BeginSection("ENTITIES");
 
         foreach (Wire wire in doc.Wires)
         {
             foreach ((Vec2 a, Vec2 b) in wire.Segments())
-            {
-                Line(sb, LayerWires, a, b);
-            }
+                dxf.Line(WireLayer, a, b);
         }
 
-        var netlist = NetlistExtractor.Extract(doc);
+        foreach (Vec2 junction in NetlistExtractor.Extract(doc).Junctions)
+            dxf.Circle(WireLayer, junction, 1.2);
 
-        foreach (var j in netlist.Junctions)
+        foreach (SymbolInstance symbol in doc.Symbols)
         {
-            Circle(sb, LayerWires, j, 1.2);
+            foreach (DrawPrimitive primitive in symbol.WorldPrimitives())
+                dxf.Primitive(SymbolLayer, primitive);
+
+            (Vec2 refDesAnchor, Vec2 valueAnchor) = symbol.LabelAnchors();
+            if (symbol.RefDes.Length > 0 && symbol.Definition.Kind.ShowsRefDes)
+                dxf.Text(TextLayer, refDesAnchor, symbol.RefDes, LabelHeight, VerticalAlignment.Bottom);
+            if (symbol.Value.Length > 0)
+                dxf.Text(TextLayer, valueAnchor, symbol.Value, LabelHeight, VerticalAlignment.Top);
         }
 
-        foreach (SymbolInstance sym in doc.Symbols)
-        {
-            ExportSymbol(sb, sym);
-
-            (Vec2 refPos, Vec2 valPos) = sym.LabelAnchors();
-
-            if (!string.IsNullOrEmpty(sym.RefDes) && sym.Definition.Name != "Ground")
-            {
-                Text(sb, LayerText, refPos, sym.RefDes, 5);
-            }
-
-            if (!string.IsNullOrEmpty(sym.Value))
-            {
-                Text(sb, LayerText, valPos, sym.Value, 5);
-            }
-        }
-
-        Pair(sb, 0, "ENDSEC");
-        Pair(sb, 0, "EOF");
-        return sb.ToString();
+        dxf.EndSection();
+        dxf.Pair(0, "EOF");
+        return dxf.ToString();
     }
 
-    public static void ExportToFile(SchematicDocument doc, string path) => File.WriteAllText(path, Export(doc), new UTF8Encoding(false));
+    public static void ExportToFile(SchematicDocument doc, string path) => File.WriteAllText(path, Export(doc), Encoding.ASCII);
 
-    private static void ExportSymbol(StringBuilder sb, SymbolInstance sym)
+    private enum VerticalAlignment { Baseline = 0, Bottom = 1, Middle = 2, Top = 3 }
+
+    /// <summary>Writes group code / value pairs.</summary>
+    private sealed class DxfWriter
     {
-        foreach (var prim in sym.ActivePrimitives)
+        private readonly StringBuilder _text = new();
+
+        public override string ToString() => _text.ToString();
+
+        public void Pair(int code, string value) => _text.Append(code).Append('\n').Append(value).Append('\n');
+
+        public void Pair(int code, int value) => Pair(code, value.ToString(CultureInfo.InvariantCulture));
+
+        public void Pair(int code, double value)
         {
-            switch (prim)
+            string text = value.ToString("0.####", CultureInfo.InvariantCulture);
+            Pair(code, text == "-0" ? "0" : text);
+        }
+
+        /// <summary>A point: X, Y and Z under the codes <paramref name="code"/>, +10 and +20.</summary>
+        public void Point(int code, Vec2 p)
+        {
+            Pair(code, p.X);
+            Pair(code + 10, -p.Y);
+            Pair(code + 20, "0");
+        }
+
+        public void BeginSection(string name)
+        {
+            Pair(0, "SECTION");
+            Pair(2, name);
+        }
+
+        public void EndSection() => Pair(0, "ENDSEC");
+
+        public void Layer(string name, int color)
+        {
+            Pair(0, "LAYER");
+            Pair(2, name);
+            Pair(70, 0);
+            Pair(62, color);
+            Pair(6, "CONTINUOUS");
+        }
+
+        public void Line(string layer, Vec2 a, Vec2 b)
+        {
+            Entity("LINE", layer);
+            Point(10, a);
+            Point(11, b);
+        }
+
+        public void Circle(string layer, Vec2 center, double radius)
+        {
+            Entity("CIRCLE", layer);
+            Point(10, center);
+            Pair(40, radius);
+        }
+
+        /// <summary>A world-space primitive; filled triangles become SOLIDs, other polygons outlines.</summary>
+        public void Primitive(string layer, DrawPrimitive primitive)
+        {
+            switch (primitive)
             {
                 case LinePrim l:
-                    Line(sb, LayerSymbols, sym.ToWorld(l.A), sym.ToWorld(l.B));
+                    Line(layer, l.A, l.B);
+                    break;
+
+                case PolyPrim { Filled: true, Points: [Vec2 a, Vec2 b, Vec2 c] }:
+                    Entity("SOLID", layer);
+                    Point(10, a);
+                    Point(11, b);
+                    Point(12, c);
+                    Point(13, c);   // a triangle repeats its third corner
                     break;
 
                 case PolyPrim poly:
-                {
-                    Vec2[] pts = poly.Points.Select(sym.ToWorld).ToArray();
-
-                    if (poly.Filled && pts.Length == 3)
-                    {
-                        Solid(sb, LayerSymbols, pts[0], pts[1], pts[2]);
-                    }
-                    else
-                    {
-                        int count = poly.Closed ? pts.Length : pts.Length - 1;
-
-                        for (int i = 0; i < count; i++)
-                        {
-                            Line(sb, LayerSymbols, pts[i], pts[(i + 1) % pts.Length]);
-                        }
-                    }
+                    int count = poly.Closed ? poly.Points.Length : poly.Points.Length - 1;
+                    for (int i = 0; i < count; i++)
+                        Line(layer, poly.Points[i], poly.Points[(i + 1) % poly.Points.Length]);
                     break;
-                }
 
                 case CirclePrim c:
-                    Circle(sb, LayerSymbols, sym.ToWorld(c.Center), c.Radius);
+                    Circle(layer, c.Center, c.Radius);
                     break;
-
-                case ArcPrim arc:
-                {
-                    // Flattened: rotation/mirror of true ARC entities is error-prone,
-                    // short polylines import identically everywhere.
-                    Vec2[] pts = arc.Flatten().Select(sym.ToWorld).ToArray();
-
-                    for (int i = 0; i + 1 < pts.Length; i++)
-                    {
-                        Line(sb, LayerSymbols, pts[i], pts[i + 1]);
-                    }
-
-                    break;
-                }
 
                 case TextPrim t:
-                    Text(sb, LayerSymbols, sym.ToWorld(t.Anchor), t.Text, t.Height);
+                    Text(layer, t.Anchor, t.Text, t.Height, VerticalAlignment.Middle);
                     break;
             }
         }
-    }
-    private static string F(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);
 
-    private static void Pair(StringBuilder sb, int code, string value)
-    {
-        sb.Append(code).Append('\n').Append(value).Append('\n');
-    }
+        /// <summary>
+        /// Text centred horizontally on <paramref name="anchor"/>. The alignment point is exact; the
+        /// insertion point, which readers ignoring alignment use, estimates the left end of the baseline.
+        /// </summary>
+        public void Text(string layer, Vec2 anchor, string text, double height, VerticalAlignment alignment)
+        {
+            double baselineBelowAnchor = alignment switch
+            {
+                VerticalAlignment.Top => height,
+                VerticalAlignment.Middle => height * 0.5,
+                _ => 0,
+            };
 
-    private static void Layer(StringBuilder sb, string name, int color)
-    {
-        Pair(sb, 0, "LAYER");
-        Pair(sb, 2, name);
-        Pair(sb, 70, "0");
-        Pair(sb, 62, color.ToString(CultureInfo.InvariantCulture));
-        Pair(sb, 6, "CONTINUOUS");
-    }
+            Entity("TEXT", layer);
+            Point(10, new Vec2(anchor.X - text.Length * height * 0.4, anchor.Y + baselineBelowAnchor));
+            Pair(40, height);
+            Pair(1, Escape(text));
+            Pair(72, 1);   // centred
+            Point(11, anchor);
+            Pair(73, (int)alignment);
+        }
 
-    private static void Line(StringBuilder sb, string layer, Vec2 a, Vec2 b)
-    {
-        Pair(sb, 0, "LINE"); Pair(sb, 8, layer);
-        Pair(sb, 10, F(a.X)); Pair(sb, 20, F(-a.Y)); Pair(sb, 30, "0");
-        Pair(sb, 11, F(b.X)); Pair(sb, 21, F(-b.Y)); Pair(sb, 31, "0");
-    }
+        private void Entity(string type, string layer)
+        {
+            Pair(0, type);
+            Pair(8, layer);
+        }
 
-    private static void Circle(StringBuilder sb, string layer, Vec2 c, double r)
-    {
-        Pair(sb, 0, "CIRCLE"); Pair(sb, 8, layer);
-        Pair(sb, 10, F(c.X)); Pair(sb, 20, F(-c.Y)); Pair(sb, 30, "0");
-        Pair(sb, 40, F(r));
-    }
-
-    private static void Solid(StringBuilder sb, string layer, Vec2 a, Vec2 b, Vec2 c)
-    {
-        Pair(sb, 0, "SOLID"); Pair(sb, 8, layer);
-        Pair(sb, 10, F(a.X)); Pair(sb, 20, F(-a.Y)); Pair(sb, 30, "0");
-        Pair(sb, 11, F(b.X)); Pair(sb, 21, F(-b.Y)); Pair(sb, 31, "0");
-        Pair(sb, 12, F(c.X)); Pair(sb, 22, F(-c.Y)); Pair(sb, 32, "0");
-        Pair(sb, 13, F(c.X)); Pair(sb, 23, F(-c.Y)); Pair(sb, 33, "0");
-    }
-
-    private static void Text(StringBuilder sb, string layer, Vec2 center, string text, double height)
-    {
-        // DXF TEXT default anchor is left baseline; approximate centering.
-        double x = center.X - text.Length * height * 0.4;
-        double y = -center.Y - height * 0.5;
-        Pair(sb, 0, "TEXT"); Pair(sb, 8, layer);
-        Pair(sb, 10, F(x)); Pair(sb, 20, F(y)); Pair(sb, 30, "0");
-        Pair(sb, 40, F(height));
-        Pair(sb, 1, text);
+        private static string Escape(string text)
+        {
+            var escaped = new StringBuilder(text.Length);
+            foreach (char c in text)
+            {
+                if (c is >= ' ' and <= '~')
+                    escaped.Append(c);
+                else
+                    escaped.Append(CultureInfo.InvariantCulture, $"\\U+{(int)c:X4}");
+            }
+            return escaped.ToString();
+        }
     }
 }

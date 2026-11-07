@@ -179,7 +179,7 @@
                 <Button Style="{StaticResource ToolButton}" Click="OnOpen" ToolTip="Open… (Ctrl+O)">
                     <Path Style="{StaticResource IconPath}" Data="{StaticResource IconOpen}"/>
                 </Button>
-                <Button Style="{StaticResource ToolButton}" Click="OnSave" ToolTip="Save… (Ctrl+S)">
+                <Button Style="{StaticResource ToolButton}" Click="OnSave" ToolTip="Save (Ctrl+S); save as… (Ctrl+Shift+S)">
                     <Path Style="{StaticResource IconPath}" Data="{StaticResource IconSave}"/>
                 </Button>
 
@@ -315,7 +315,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <local:SchematicCanvas x:Name="Canvas"/>
+                <local:SchematicCanvas x:Name="Editor"/>
 
                 <Border x:Name="ScopePanel" Grid.Row="1" Height="200"
                         Background="#12161C" BorderBrush="#E1E3E8" BorderThickness="0,1,0,0"
@@ -328,7 +328,7 @@
                                 <Button DockPanel.Dock="Right" Content="✕" Style="{StaticResource ScopeButton}"
                                         Click="OnScopeClose" ToolTip="Hide panel"/>
                                 <Button DockPanel.Dock="Right" Content="Clear probes"
-                                        Style="{StaticResource ScopeButton}" Click="OnScopeClear"/>
+                                        Style="{StaticResource ScopeButton}" Click="OnClearProbes"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
                                     <RadioButton Content="20 ms" Tag="0.02" GroupName="ScopeWin"
                                                  Style="{StaticResource ScopeToggle}" Click="OnScopeWindow"/>

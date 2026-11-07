@@ -1,39 +1,34 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using SchematicEditor.Core;
 
 namespace SchematicEditor.App;
 
 /// <summary>
-/// Rolling oscilloscope for canvas probes. The vertical scale follows the
-/// actual [min..max] of the visible window (not a symmetric ±peak), so
-/// DC-offset signals like a rectifier rail fill the screen and their ripple
-/// is visible. Gridlines land on a 1-2-5 ladder; the zero axis is drawn
-/// whenever it falls inside the window. Traces decimate to roughly one
-/// point per pixel.
+/// A rolling oscilloscope of the canvas's probes. The vertical scale follows the actual minimum and
+/// maximum of the visible window rather than a symmetric ± peak, so that signals with a DC offset,
+/// such as a rectifier's output, fill the screen and their ripple shows. Gridlines fall on a 1-2-5
+/// ladder, with the zero line brighter whenever it is in view. Each trace is reduced to the minimum
+/// and the maximum of every pixel column, so that no peak gets lost.
 /// </summary>
 public sealed class ScopeView : FrameworkElement
 {
-    public double WindowSeconds { get; set; } = 0.2;
-
-    private SchematicCanvas? _canvas;
-
-    private static readonly Brush Bg = Frozen(Color.FromRgb(0x12, 0x16, 0x1C));
-    private static readonly Pen GridPen = FrozenPen(Color.FromRgb(0x26, 0x2E, 0x38), 1);
-    private static readonly Pen AxisPen = FrozenPen(Color.FromRgb(0x4A, 0x57, 0x66), 1);
-    private static readonly Brush TextBrush = Frozen(Color.FromRgb(0x9A, 0xA5, 0xB4));
-    private static readonly Typeface Mono = new("Consolas");
-
     private const double MarginY = 8;
 
-    private static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+    private SchematicCanvas? _canvas;
+    private readonly List<Point> _points = [];
 
-    private static Pen FrozenPen(Color c, double w)
+    /// <summary>The time span shown; at most <see cref="Probe.TraceSeconds"/>.</summary>
+    public double WindowSeconds
     {
-        var p = new Pen(new SolidColorBrush(c), w);
-        p.Freeze();
-        return p;
-    }
+        get;
+        set
+        {
+            field = value;
+            InvalidateVisual();
+        }
+    } = 0.2;
 
     public void Attach(SchematicCanvas canvas)
     {
@@ -45,146 +40,148 @@ public sealed class ScopeView : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         double w = ActualWidth, h = ActualHeight;
-        if (w < 10 || h < 10) return;
+        if (w < 10 || h < 10)
+            return;
 
-        dc.DrawRectangle(Bg, null, new Rect(0, 0, w, h));
+        dc.DrawRectangle(PlotStyle.Background, null, new Rect(0, 0, w, h));
+        for (int i = 1; i < 10; i++)   // ten time divisions
+            dc.DrawLine(PlotStyle.GridPen, new Point(w * i / 10, 0), new Point(w * i / 10, h));
 
-        // Time graticule: 10 divisions.
-        for (int i = 1; i < 10; i++)
-            dc.DrawLine(GridPen, new Point(w * i / 10, 0), new Point(w * i / 10, h));
-
-        var probes = _canvas?.Probes;
-        if (_canvas is null || probes is null || probes.Count == 0)
+        if (_canvas is not { Probes: { Count: > 0 } probes } canvas)
         {
             for (int i = 1; i < 6; i++)
-                dc.DrawLine(GridPen, new Point(0, h * i / 6), new Point(w, h * i / 6));
-            var hint = Text("Arm the probe tool and click a wire (voltage) or a component (current).", 12, TextBrush);
+                dc.DrawLine(PlotStyle.GridPen, new Point(0, h * i / 6), new Point(w, h * i / 6));
+            FormattedText hint = Text("Arm the probe tool and click a wire (voltage) or a component (current).", 12, PlotStyle.TextBrush);
             dc.DrawText(hint, new Point((w - hint.Width) / 2, (h - hint.Height) / 2));
             return;
         }
 
-        double tNow = _canvas.SimTime;
-        if (!_canvas.IsRunning)                                  // frozen after stop
-            foreach (var p in probes)
-                if (p.Times.Count > 0)
-                    tNow = Math.Max(tNow, p.Times[^1]);
-        double t0 = tNow - WindowSeconds;
+        // Up to the simulation time, or to the last sample once the simulation has stopped.
+        double end = canvas.IsRunning ? canvas.SimTime : probes.Max(p => p.Trace.Count > 0 ? p.Trace.EndTime : 0);
+        double start = end - WindowSeconds;
 
-        // Range of the visible window across all traces.
-        double vmin = double.MaxValue, vmax = double.MinValue;
-        foreach (var p in probes)
-        {
-            var (times, values) = (p.Times, p.Values);
-            for (int i = values.Count - 1; i >= 0; i--)
-            {
-                if (times[i] < t0) break;
-                double v = values[i];
-                if (v < vmin) vmin = v;
-                if (v > vmax) vmax = v;
-            }
-        }
-        if (vmin > vmax) { vmin = -1; vmax = 1; }               // no samples yet
-
-        // Pad, and never let the span collapse (flat DC trace).
-        double span = vmax - vmin;
-        double minSpan = Math.Max(1e-6, Math.Max(Math.Abs(vmax), Math.Abs(vmin)) * 0.02);
-        if (span < minSpan)
-        {
-            double mid = (vmin + vmax) / 2;
-            vmin = mid - minSpan / 2;
-            vmax = mid + minSpan / 2;
-            span = minSpan;
-        }
-        double lo = vmin - span * 0.07;
-        double hi = vmax + span * 0.07;
-
+        (double lo, double hi) = VisibleRange(probes, start);
         double Y(double v) => h - MarginY - (v - lo) / (hi - lo) * (h - 2 * MarginY);
-        double X(double t) => (t - t0) / WindowSeconds * w;
+        double X(double t) => (t - start) / WindowSeconds * w;
 
         // Value gridlines on a 1-2-5 ladder, labelled at the right edge.
-        double step = NiceCeil((hi - lo) / 6);
+        double step = NiceCeiling((hi - lo) / 6);
         for (double v = Math.Ceiling(lo / step) * step; v <= hi + step * 1e-9; v += step)
         {
             double y = Y(v);
-            bool isZero = Math.Abs(v) < step * 1e-6;
-            dc.DrawLine(isZero ? AxisPen : GridPen, new Point(0, y), new Point(w, y));
-            var label = Text(FormatValue(v), 10, TextBrush);
+            bool zero = Math.Abs(v) < step * 1e-6;
+            dc.DrawLine(zero ? PlotStyle.AxisPen : PlotStyle.GridPen, new Point(0, y), new Point(w, y));
+            FormattedText label = Text(Units.Format(zero ? 0 : v), 10, PlotStyle.TextBrush);
             dc.DrawText(label, new Point(w - label.Width - 4, y - label.Height - 1));
         }
 
-        // Traces.
-        foreach (var p in probes)
+        foreach (Probe probe in probes)
         {
-            var (times, values) = (p.Times, p.Values);
-            int count = values.Count;
-            if (count < 2) continue;
+            ProbeTrace trace = probe.Trace;
+            int first = trace.FirstIndexAt(start);
+            if (trace.Count - first < 2)
+                continue;
 
-            int first = count - 1;
-            while (first > 0 && times[first - 1] >= t0) first--;
-            int visible = count - first;
-            if (visible < 2) continue;
-
-            int stride = Math.Max(1, visible / Math.Max(64, (int)w));
-
-            var geo = new StreamGeometry();
-            using (var ctx = geo.Open())
+            ReduceToColumns(trace, first, X, Y);
+            var geometry = new StreamGeometry();
+            using (StreamGeometryContext context = geometry.Open())
             {
-                ctx.BeginFigure(new Point(X(times[first]), Y(values[first])), false, false);
-                for (int i = first + stride; i < count; i += stride)
-                    ctx.LineTo(new Point(X(times[i]), Y(values[i])), true, false);
-                ctx.LineTo(new Point(X(times[count - 1]), Y(values[count - 1])), true, false);
+                context.BeginFigure(_points[0], isFilled: false, isClosed: false);
+                context.PolyLineTo(_points.GetRange(1, _points.Count - 1), isStroked: true, isSmoothJoin: false);
             }
-            geo.Freeze();
+            geometry.Freeze();
+            dc.DrawGeometry(null, probe.Pen, geometry);
+        }
 
-            var pen = new Pen(new SolidColorBrush(p.Color), 1.6)
+        // Legend with the latest values.
+        double legendY = 6;
+        foreach (Probe probe in probes)
+        {
+            FormattedText legend = Text($"{probe.Label}  {Units.Format(probe.Trace.Last, probe.Unit)}", 12, probe.Brush);
+            dc.DrawText(legend, new Point(8, legendY));
+            legendY += legend.Height + 2;
+        }
+
+        string window = WindowSeconds >= 1
+            ? string.Create(CultureInfo.InvariantCulture, $"{WindowSeconds:0.#} s")
+            : string.Create(CultureInfo.InvariantCulture, $"{WindowSeconds * 1000:0.#} ms");
+        FormattedText caption = Text(window, 11, PlotStyle.TextBrush);
+        dc.DrawText(caption, new Point(w - caption.Width - 4, h - caption.Height - 2));
+    }
+
+    /// <summary>The value range of the samples from <paramref name="start"/> on, padded, and never empty.</summary>
+    private static (double Low, double High) VisibleRange(IReadOnlyList<Probe> probes, double start)
+    {
+        double min = double.MaxValue, max = double.MinValue;
+        foreach (Probe probe in probes)
+        {
+            ProbeTrace trace = probe.Trace;
+            for (int i = trace.FirstIndexAt(start); i < trace.Count; i++)
             {
-                LineJoin = PenLineJoin.Round,
-            };
-            pen.Freeze();
-            dc.DrawGeometry(null, pen, geo);
+                min = Math.Min(min, trace[i]);
+                max = Math.Max(max, trace[i]);
+            }
+        }
+        if (min > max)   // no samples yet
+            (min, max) = (-1, 1);
+
+        // A flat trace still gets some height.
+        double span = max - min;
+        double minSpan = Math.Max(1e-6, Math.Max(Math.Abs(max), Math.Abs(min)) * 0.02);
+        if (span < minSpan)
+        {
+            double mid = (min + max) / 2;
+            (min, max, span) = (mid - minSpan / 2, mid + minSpan / 2, minSpan);
+        }
+        return (min - span * 0.07, max + span * 0.07);
+    }
+
+    /// <summary>
+    /// Fills _points with the trace from <paramref name="first"/> on: for every pixel column the
+    /// samples with the lowest and the highest value, in the order they were taken.
+    /// </summary>
+    private void ReduceToColumns(ProbeTrace trace, int first, Func<double, double> x, Func<double, double> y)
+    {
+        _points.Clear();
+        int column = int.MinValue, low = first, high = first;
+        for (int i = first; i < trace.Count; i++)
+        {
+            int c = (int)Math.Floor(x(trace.TimeAt(i)));
+            if (c != column)
+            {
+                AddColumn();
+                (column, low, high) = (c, i, i);
+            }
+            else if (trace[i] < trace[low])
+            {
+                low = i;
+            }
+            else if (trace[i] > trace[high])
+            {
+                high = i;
+            }
+        }
+        AddColumn();
+
+        void AddColumn()
+        {
+            if (column == int.MinValue)
+                return;
+            AddPoint(Math.Min(low, high));
+            if (low != high)
+                AddPoint(Math.Max(low, high));
         }
 
-        // Legend with live values.
-        double ly = 6;
-        foreach (var p in probes)
-        {
-            var brush = new SolidColorBrush(p.Color);
-            brush.Freeze();
-            string unit = p.IsCurrent ? "A" : "V";
-            var ft = Text($"{p.Label}  {SchematicCanvas.FormatSi(p.LastValue, unit)}", 12, brush);
-            dc.DrawText(ft, new Point(8, ly));
-            ly += ft.Height + 2;
-        }
-
-        // Time window caption.
-        var win = Text(WindowSeconds >= 1 ? $"{WindowSeconds:0.#} s" : $"{WindowSeconds * 1000:0.#} ms", 11, TextBrush);
-        dc.DrawText(win, new Point(w - win.Width - 4, h - win.Height - 2));
+        void AddPoint(int i) => _points.Add(new Point(x(trace.TimeAt(i)), y(trace[i])));
     }
 
-    private static string FormatValue(double v)
+    // The 1-2-5 step at or above v.
+    private static double NiceCeiling(double v)
     {
-        double a = Math.Abs(v);
-        if (a < 1e-12) return "0";
-        (double m, string s) = a switch
-        {
-            >= 1e6 => (1e-6, "M"),
-            >= 1e3 => (1e-3, "k"),
-            >= 1 => (1.0, ""),
-            >= 1e-3 => (1e3, "m"),
-            >= 1e-6 => (1e6, "\u00b5"),
-            _ => (1e9, "n"),
-        };
-        return (v * m).ToString("0.###", CultureInfo.InvariantCulture) + s;
+        double decade = Math.Pow(10, Math.Floor(Math.Log10(v)));
+        double m = v / decade;
+        return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * decade;
     }
 
-    private static double NiceCeil(double v)
-    {
-        double p = Math.Pow(10, Math.Floor(Math.Log10(v)));
-        double m = v / p;
-        return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
-    }
-
-    private FormattedText Text(string s, double size, Brush brush) =>
-        new(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-            Mono, size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+    private FormattedText Text(string text, double size, Brush brush) => PlotStyle.Text(this, text, size, brush);
 }

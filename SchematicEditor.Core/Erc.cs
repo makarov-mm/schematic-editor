@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace SchematicEditor.Core;
 
 public enum ErcSeverity { Warning, Error }
@@ -8,12 +10,8 @@ public sealed record ErcIssue(ErcSeverity Severity, string Message, Vec2 Locatio
 }
 
 /// <summary>
-/// Electrical rule check. MVP rules:
-///  E1: unconnected symbol pin;
-///  E2: dangling wire end;
-///  E3: net with a single pin;
-///  E4: both terminals of a source/battery on the same net (short circuit);
-///  W1: symbol with default refdes still containing '?'.
+/// Electrical rule check: unconnected pins, dangling wire ends, nets that reach a single pin,
+/// short-circuited sources, and missing or duplicate reference designators.
 /// </summary>
 public static class ErcChecker
 {
@@ -21,67 +19,42 @@ public static class ErcChecker
     {
         List<ErcIssue> issues = [];
 
-        // E1: pins not present in any net with >= 2 connections.
-        var connectedPins = new HashSet<(int, string)>();
-
-        foreach (var net in netlist.Nets)
+        foreach (SymbolInstance symbol in doc.Symbols)
         {
-            bool hasWires = net.Wires.Count > 0;
-
-            foreach (var pin in net.Pins)
+            foreach ((PinDefinition pin, Vec2 world) in symbol.WorldPins())
             {
-                if (hasWires || net.Pins.Count > 1)
-                {
-                    connectedPins.Add((pin.Symbol.Id, pin.Pin.Name));
-                }
+                if (netlist.NetOf(symbol, pin) is not { IsConnecting: true })
+                    issues.Add(new(ErcSeverity.Error, $"Unconnected pin {symbol.DisplayName}.{pin.Name}", world));
             }
+
+            if (symbol.Definition.Kind.ShowsRefDes && (symbol.RefDes.Length == 0 || symbol.RefDes.EndsWith('?')))
+                issues.Add(new(ErcSeverity.Warning, $"Symbol has no reference designator: {symbol.DisplayName}", symbol.Position));
         }
 
-        foreach (var sym in doc.Symbols)
-        {
-            foreach (var (pin, world) in sym.WorldPins())
-            {
-                if (!connectedPins.Contains((sym.Id, pin.Name)))
-                {
-                    issues.Add(new ErcIssue(ErcSeverity.Error, $"Unconnected pin {sym.RefDes}.{pin.Name}", world));
-                }
-            }
+        IEnumerable<SymbolInstance> duplicates = doc.Symbols
+            .Where(s => s.Definition.Kind.ShowsRefDes && s.RefDes.Length > 0 && !s.RefDes.EndsWith('?'))
+            .GroupBy(s => s.RefDes, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g);
+        foreach (SymbolInstance symbol in duplicates)
+            issues.Add(new(ErcSeverity.Warning, $"Duplicate reference designator {symbol.RefDes}", symbol.Position));
 
-            if (sym.RefDes.EndsWith('?'))
-            {
-                issues.Add(new ErcIssue(ErcSeverity.Warning, $"Symbol has no reference designator: {sym.RefDes}", sym.Position));
-            }
-        }
-
-        // E2: dangling wire ends.
         foreach (Vec2 p in netlist.DanglingWireEnds)
-        {
-            issues.Add(new ErcIssue(ErcSeverity.Error, $"Dangling wire end at ({p.X:0.#}, {p.Y:0.#})", p));
-        }
+            issues.Add(new(ErcSeverity.Error, string.Create(CultureInfo.InvariantCulture, $"Dangling wire end at ({p.X:0.#}, {p.Y:0.#})"), p));
 
-        // E3: single-pin nets (a wire that reaches exactly one pin).
         foreach (Net net in netlist.Nets)
         {
             if (net.Pins.Count == 1 && net.Wires.Count > 0)
-            {
-                issues.Add(new ErcIssue(ErcSeverity.Warning, $"Net {net.Name} connects only one pin ({net.Pins[0]})", net.Pins[0].World));
-            }
+                issues.Add(new(ErcSeverity.Warning, $"Net {net.Name} connects only one pin ({net.Pins[0]})", net.Pins[0].World));
         }
 
-        // E4: shorted two-terminal sources.
-        foreach (var net in netlist.Nets)
+        // Both terminals on one net, or on two ground nets, which the simulation joins.
+        foreach (SymbolInstance source in doc.Symbols.Where(s => s.Definition.Kind.IsVoltageSource))
         {
-            var bySymbol = net.Pins
-                .Where(p => p.Symbol.Definition.Name is "VSource" or "Battery")
-                .GroupBy(p => p.Symbol.Id);
-
-            foreach (IGrouping<int, NetPin> g in bySymbol)
-            {
-                if (g.Count() >= 2)
-                {
-                    issues.Add(new ErcIssue(ErcSeverity.Error, $"Source {g.First().Symbol.RefDes} is short-circuited (both terminals on net {net.Name})", g.First().Symbol.Position));
-                }
-            }
+            Net? plus = netlist.NetOf(source, source.Definition.Pins[0]);
+            Net? minus = netlist.NetOf(source, source.Definition.Pins[1]);
+            if (plus is not null && minus is not null && (plus == minus || plus.IsGround && minus.IsGround))
+                issues.Add(new(ErcSeverity.Error, $"Source {source.DisplayName} is short-circuited (both terminals on net {plus.Name})", source.Position));
         }
 
         return issues;

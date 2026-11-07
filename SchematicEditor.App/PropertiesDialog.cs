@@ -3,14 +3,11 @@ using System.Windows.Controls;
 
 namespace SchematicEditor.App;
 
-/// <summary>Minimal refdes/value editor, built in code — no XAML needed for two fields.</summary>
+/// <summary>Edits a symbol's reference designator and value; two fields need no XAML.</summary>
 public sealed class PropertiesDialog : Window
 {
-    private readonly TextBox _refBox;
-    private readonly TextBox _valBox;
-
-    public string RefDes => _refBox.Text.Trim();
-    public string Value => _valBox.Text.Trim();
+    private readonly TextBox _refDesBox;
+    private readonly TextBox _valueBox;
 
     public PropertiesDialog(string refDes, string value)
     {
@@ -25,37 +22,39 @@ public sealed class PropertiesDialog : Window
         for (int i = 0; i < 3; i++)
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        _refBox = new TextBox { Text = refDes, Margin = new Thickness(6, 2, 0, 2) };
-        _valBox = new TextBox { Text = value, Margin = new Thickness(6, 2, 0, 2) };
+        _refDesBox = new TextBox { Text = refDes, Margin = new Thickness(6, 2, 0, 2) };
+        _valueBox = new TextBox { Text = value, Margin = new Thickness(6, 2, 0, 2) };
+        AddRow(grid, 0, "RefDes:", _refDesBox);
+        AddRow(grid, 1, "Value:", _valueBox);
 
-        AddRow(grid, 0, "RefDes:", _refBox);
-        AddRow(grid, 1, "Value:", _valBox);
-
+        var ok = new Button { Content = "OK", Width = 70, IsDefault = true, Margin = new Thickness(0, 0, 6, 0) };
+        ok.Click += (_, _) => DialogResult = true;
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 10, 0, 0),
+            Children = { ok, new Button { Content = "Cancel", Width = 70, IsCancel = true } },
         };
-        var ok = new Button { Content = "OK", Width = 70, IsDefault = true, Margin = new Thickness(0, 0, 6, 0) };
-        var cancel = new Button { Content = "Cancel", Width = 70, IsCancel = true };
-        ok.Click += (_, _) => DialogResult = true;
-        buttons.Children.Add(ok);
-        buttons.Children.Add(cancel);
-
         Grid.SetRow(buttons, 2);
         Grid.SetColumnSpan(buttons, 2);
         grid.Children.Add(buttons);
 
         Content = grid;
-        Loaded += (_, _) => { _refBox.Focus(); _refBox.SelectAll(); };
+        Loaded += (_, _) =>
+        {
+            _refDesBox.Focus();
+            _refDesBox.SelectAll();
+        };
     }
+
+    public string RefDes => _refDesBox.Text.Trim();
+    public string Value => _valueBox.Text.Trim();
 
     private static void AddRow(Grid grid, int row, string label, UIElement editor)
     {
         var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetRow(text, row);
-        Grid.SetColumn(text, 0);
         Grid.SetRow(editor, row);
         Grid.SetColumn(editor, 1);
         grid.Children.Add(text);

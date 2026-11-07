@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,48 +12,12 @@ namespace SchematicEditor.App;
 
 public partial class MainWindow : Window
 {
+    private const string AppTitle = "Schematic Editor";
+    private const string FileFilter = "Schematic (*.schem.json)|*.schem.json";
+
     private sealed record PaletteItem(string Name, ImageSource Icon);
 
     private sealed record ErcListItem(string Text, Brush DotBrush, Vec2? Location);
-
-    private static readonly Brush ErrorDot = Frozen(Color.FromRgb(0xd0, 0x20, 0x20));
-    private static readonly Brush WarningDot = Frozen(Color.FromRgb(0xe8, 0x9a, 0x00));
-    private static readonly Brush OkDot = Frozen(Color.FromRgb(0x18, 0xa0, 0x46));
-
-    private static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
-
-    private string? _currentPath;
-
-    public MainWindow()
-    {
-        InitializeComponent();
-
-        Palette.ItemsSource = SymbolLibrary.All
-            .Select(def => new PaletteItem(def.Name, SymbolIconFactory.Create(def)))
-            .ToList();
-
-        Canvas.StatusChanged += s => StatusText.Text = s;
-        Canvas.CursorStatusChanged += s => CoordsText.Text = s;
-        Canvas.SelectionOrToolChanged += UpdateToolbar;
-        Canvas.SimulationStateChanged += OnSimulationStateChanged;
-        Canvas.SimulationFrame += () =>
-        {
-            ClearProbesButton.IsEnabled = Canvas.Probes.Count > 0;
-            AcButton.IsEnabled = Canvas.Probes.Any(p => !p.IsCurrent);
-        };
-        Scope.Attach(Canvas);
-        UpdateToolbar();
-
-        // File shortcuts live on the window; editing shortcuts live on the canvas.
-        InputBindings.Add(new KeyBinding(new RelayCommand(() => OnNew(this, null!)),
-            Key.N, ModifierKeys.Control));
-        InputBindings.Add(new KeyBinding(new RelayCommand(() => OnOpen(this, null!)),
-            Key.O, ModifierKeys.Control));
-        InputBindings.Add(new KeyBinding(new RelayCommand(() => OnSave(this, null!)),
-            Key.S, ModifierKeys.Control));
-
-        Loaded += (_, _) => Canvas.Focus();
-    }
 
     private sealed class RelayCommand(Action action) : ICommand
     {
@@ -60,181 +26,194 @@ public partial class MainWindow : Window
         public void Execute(object? parameter) => action();
     }
 
+    private static readonly Brush ErrorDot = Paint.Brush(0xD0, 0x20, 0x20);
+    private static readonly Brush WarningDot = Paint.Brush(0xE8, 0x9A, 0x00);
+    private static readonly Brush OkDot = Paint.Brush(0x18, 0xA0, 0x46);
+    private static readonly Brush RunBrush = Paint.Brush(0x2E, 0x9E, 0x4F);
+    private static readonly Brush StopBrush = Paint.Brush(0xC8, 0x35, 0x35);
+
+    private string? _currentPath;
+    private string _savedJson;   // the document as last opened or saved, to tell whether it has changed
+
+    public MainWindow()
+    {
+        InitializeComponent();
+
+        Palette.ItemsSource = SymbolLibrary.All.Select(d => new PaletteItem(d.Name, SymbolIconFactory.Create(d))).ToList();
+
+        Editor.StatusChanged += message => StatusText.Text = message;
+        Editor.CursorStatusChanged += readout => CoordsText.Text = readout;
+        Editor.SelectionOrToolChanged += UpdateToolbar;
+        Editor.SimulationStateChanged += OnSimulationStateChanged;
+        Editor.SimulationFrame += () =>
+        {
+            ClearProbesButton.IsEnabled = Editor.Probes.Count > 0;
+            AcButton.IsEnabled = Editor.Probes.Any(p => !p.IsCurrent);
+        };
+        Editor.DocumentChanged += () =>
+        {
+            if (ErcPanel.Visibility == Visibility.Visible)
+                RunErc();
+        };
+        Scope.Attach(Editor);
+        _savedJson = CurrentJson();
+        UpdateToolbar();
+
+        // The file commands work anywhere in the window; the editing keys belong to the canvas.
+        InputBindings.Add(new KeyBinding(new RelayCommand(NewDocument), Key.N, ModifierKeys.Control));
+        InputBindings.Add(new KeyBinding(new RelayCommand(OpenDocument), Key.O, ModifierKeys.Control));
+        InputBindings.Add(new KeyBinding(new RelayCommand(() => Save()), Key.S, ModifierKeys.Control));
+        InputBindings.Add(new KeyBinding(new RelayCommand(() => SaveAs()), Key.S, ModifierKeys.Control | ModifierKeys.Shift));
+
+        Loaded += (_, _) => Editor.Focus();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!ConfirmDiscardChanges())
+            e.Cancel = true;
+        base.OnClosing(e);
+    }
+
     private void UpdateToolbar()
     {
-        bool running = Canvas.IsRunning;
+        bool running = Editor.IsRunning;
 
-        SelectToggle.IsChecked = !running && Canvas.Tool == EditorTool.Select;
-        WireToggle.IsChecked = !running && Canvas.Tool == EditorTool.Wire;
+        SelectToggle.IsChecked = !running && Editor.Tool == EditorTool.Select;
+        WireToggle.IsChecked = !running && Editor.Tool == EditorTool.Wire;
         SelectToggle.IsEnabled = !running;
         WireToggle.IsEnabled = !running;
-        UndoButton.IsEnabled = !running && Canvas.Undo.CanUndo;
-        RedoButton.IsEnabled = !running && Canvas.Undo.CanRedo;
+        UndoButton.IsEnabled = !running && Editor.Undo.CanUndo;
+        RedoButton.IsEnabled = !running && Editor.Undo.CanRedo;
+        UndoButton.ToolTip = Editor.Undo.UndoName is { } undo ? $"Undo {undo} (Ctrl+Z)" : "Undo (Ctrl+Z)";
+        RedoButton.ToolTip = Editor.Undo.RedoName is { } redo ? $"Redo {redo} (Ctrl+Y)" : "Redo (Ctrl+Y)";
         Palette.IsEnabled = !running;
-        RotateButton.IsEnabled = Canvas.CanRotateMirror;
-        MirrorButton.IsEnabled = Canvas.CanRotateMirror;
-        ProbeToggle.IsChecked = Canvas.ProbeArmed;
+        RotateButton.IsEnabled = Editor.CanRotateMirror;
+        MirrorButton.IsEnabled = Editor.CanRotateMirror;
+        ProbeToggle.IsChecked = Editor.ProbeArmed;
 
-        (ToolText.Text, HintText.Text) = running
-            ? ("Running",
-                "Click a switch to toggle it  •  Shift+wheel over R/C/L to tweak its value  •  Esc stop")
-            : Canvas.ProbeArmed
-            ? ("Probe",
-                "Click a wire/pin for a voltage probe, a component body for current  •  click a probe to remove it  •  Esc exit")
-            : Canvas.Tool switch
+        (ToolText.Text, HintText.Text) =
+            running ? ("Running", "Click a switch to toggle it  •  Shift+wheel over R/C/L to tweak its value  •  Esc stop")
+            : Editor.ProbeArmed ? ("Probe", "Click a wire/pin for a voltage probe, a component body for current  •  click a probe to remove it  •  Esc exit")
+            : Editor.Tool switch
             {
-                EditorTool.Wire => ("Wire",
-                    "Click a pin or wire to start  •  click a target pin/wire to finish  •  RMB / Esc cancel"),
-                EditorTool.Place => ("Place",
-                    "Click to place  •  R rotate  •  M mirror  •  Esc / RMB back to Select"),
-                _ => ("Select",
-                    "Drag to move / rubber-band  •  R rotate  •  M mirror  •  double-click to edit  •  Del delete"),
+                EditorTool.Wire => ("Wire", "Click a pin or wire to start  •  click a target pin/wire to finish  •  RMB / Esc cancel"),
+                EditorTool.Place => ("Place", "Click to place  •  R rotate  •  M mirror  •  Esc / RMB back to Select"),
+                _ => ("Select", "Drag to move / rubber-band  •  R rotate  •  M mirror  •  double-click to edit  •  Del delete"),
             };
 
-        if (!running && Canvas.Tool != EditorTool.Place)
+        if (!running && Editor.Tool != EditorTool.Place)
             Palette.SelectedIndex = -1;
     }
 
-    // ------------------------------------------------------------ simulation
-
-    private void OnSimulationStateChanged()
-    {
-        bool running = Canvas.IsRunning;
-
-        RunIcon.Data = (System.Windows.Media.Geometry)FindResource(running ? "IconStop" : "IconPlay");
-        var brush = running ? Frozen(Color.FromRgb(0xC8, 0x35, 0x35)) : Frozen(Color.FromRgb(0x2E, 0x9E, 0x4F));
-        RunIcon.Fill = brush;
-        RunIcon.Stroke = brush;
-        RunButton.ToolTip = running ? "Stop simulation (Esc)" : "Run simulation";
-
-        ResetButton.IsEnabled = running;
-
-        if (running)
-            ScopePanel.Visibility = Visibility.Visible;
-
-        UpdateToolbar();
-    }
-
-    private void OnRotate(object sender, RoutedEventArgs e)
-    {
-        Canvas.RotateSelectionOrGhost();
-        Canvas.Focus();
-    }
-
-    private void OnMirror(object sender, RoutedEventArgs e)
-    {
-        Canvas.MirrorSelectionOrGhost();
-        Canvas.Focus();
-    }
-
-    private void OnRunStop(object sender, RoutedEventArgs e)
-    {
-        if (Canvas.IsRunning) Canvas.StopSimulation();
-        else Canvas.StartSimulation();
-        Canvas.Focus();
-    }
-
-    private void OnResetSim(object sender, RoutedEventArgs e)
-    {
-        Canvas.ResetSimulation();
-        Canvas.Focus();
-    }
-
-    private void OnProbeToggle(object sender, RoutedEventArgs e)
-    {
-        Canvas.ProbeArmed = ProbeToggle.IsChecked == true;
-        Canvas.Focus();
-    }
-
-    private void OnScopeWindow(object sender, RoutedEventArgs e)
-    {
-        if (sender is RadioButton { Tag: string tag } &&
-            double.TryParse(tag, System.Globalization.CultureInfo.InvariantCulture, out double sec))
-        {
-            Scope.WindowSeconds = sec;
-            Scope.InvalidateVisual();
-        }
-        Canvas.Focus();
-    }
-
-    private void OnAcAnalysis(object sender, RoutedEventArgs e)
-    {
-        var traces = Canvas.ComputeAcSweep(1.0, 100e3, 48, out string? error);
-        if (traces is null)
-        {
-            StatusText.Text = error ?? "AC analysis failed.";
-            return;
-        }
-        new BodeWindow(traces) { Owner = this }.Show();
-        Canvas.Focus();
-    }
-
-    private void OnClearProbes(object sender, RoutedEventArgs e)
-    {
-        Canvas.ClearProbes();
-        Canvas.Focus();
-    }
-
-    private void OnScopeClear(object sender, RoutedEventArgs e)
-    {
-        Canvas.ClearProbes();
-        Canvas.Focus();
-    }
-
-    private void OnScopeClose(object sender, RoutedEventArgs e) =>
-        ScopePanel.Visibility = Visibility.Collapsed;
-
-    // ------------------------------------------------------------ tools
+    // ------------------------------------------------------------------ tools and editing
 
     private void OnPaletteSelection(object sender, SelectionChangedEventArgs e)
     {
         if (Palette.SelectedItem is PaletteItem item)
         {
-            Canvas.SetPlaceTool(item.Name);
-            Canvas.Focus();
+            Editor.SetPlaceTool(item.Name);
+            Editor.Focus();
         }
     }
 
-    private void OnSelectTool(object sender, RoutedEventArgs e)
+    private void OnSelectTool(object sender, RoutedEventArgs e) => WithEditor(Editor.SetSelectTool);
+    private void OnWireTool(object sender, RoutedEventArgs e) => WithEditor(Editor.SetWireTool);
+    private void OnUndo(object sender, RoutedEventArgs e) => WithEditor(Editor.Undo.Undo);
+    private void OnRedo(object sender, RoutedEventArgs e) => WithEditor(Editor.Undo.Redo);
+    private void OnFit(object sender, RoutedEventArgs e) => WithEditor(Editor.ZoomToFit);
+    private void OnRotate(object sender, RoutedEventArgs e) => WithEditor(Editor.RotateSelectionOrGhost);
+    private void OnMirror(object sender, RoutedEventArgs e) => WithEditor(Editor.MirrorSelectionOrGhost);
+
+    // Runs a toolbar action, then gives the keyboard back to the canvas.
+    private void WithEditor(Action action)
     {
-        Canvas.SetSelectTool();
-        Canvas.Focus();
+        action();
+        Editor.Focus();
     }
 
-    private void OnWireTool(object sender, RoutedEventArgs e)
+    // ------------------------------------------------------------------ simulation
+
+    private void OnSimulationStateChanged()
     {
-        Canvas.SetWireTool();
-        Canvas.Focus();
+        bool running = Editor.IsRunning;
+        RunIcon.Data = (Geometry)FindResource(running ? "IconStop" : "IconPlay");
+        RunIcon.Fill = RunIcon.Stroke = running ? StopBrush : RunBrush;
+        RunButton.ToolTip = running ? "Stop simulation (Esc)" : "Run simulation";
+        ResetButton.IsEnabled = running;
+        if (running)
+            ScopePanel.Visibility = Visibility.Visible;
+        UpdateToolbar();
     }
 
-    private void OnUndo(object sender, RoutedEventArgs e) { Canvas.Undo.Undo(); Canvas.Focus(); }
-    private void OnRedo(object sender, RoutedEventArgs e) { Canvas.Undo.Redo(); Canvas.Focus(); }
-    private void OnFit(object sender, RoutedEventArgs e) { Canvas.ZoomToFit(); Canvas.Focus(); }
-
-    // ------------------------------------------------------------ file I/O
-
-    private void OnNew(object sender, RoutedEventArgs e)
-    {
-        Canvas.SetDocument(new SchematicDocument());
-        _currentPath = null;
-        Title = "Schematic Editor";
-    }
-
-    private void OnOpen(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog
+    private void OnRunStop(object sender, RoutedEventArgs e) =>
+        WithEditor(() =>
         {
-            Filter = "Schematic (*.schem.json)|*.schem.json|All files (*.*)|*.*",
-        };
-        if (dlg.ShowDialog(this) != true) return;
+            if (Editor.IsRunning)
+                Editor.StopSimulation();
+            else
+                Editor.StartSimulation();
+        });
+
+    private void OnResetSim(object sender, RoutedEventArgs e) => WithEditor(Editor.ResetSimulation);
+
+    private void OnProbeToggle(object sender, RoutedEventArgs e) =>
+        WithEditor(() =>
+        {
+            Editor.ProbeArmed = ProbeToggle.IsChecked == true;
+            if (Editor.ProbeArmed)
+                ScopePanel.Visibility = Visibility.Visible;   // where the probes show
+        });
+
+    private void OnClearProbes(object sender, RoutedEventArgs e) => WithEditor(Editor.ClearProbes);
+
+    private void OnScopeWindow(object sender, RoutedEventArgs e)
+    {
+        if (sender is RadioButton { Tag: string tag } && double.TryParse(tag, CultureInfo.InvariantCulture, out double seconds))
+            Scope.WindowSeconds = seconds;
+        Editor.Focus();
+    }
+
+    private void OnScopeClose(object sender, RoutedEventArgs e) => ScopePanel.Visibility = Visibility.Collapsed;
+
+    private void OnAcAnalysis(object sender, RoutedEventArgs e)
+    {
+        if (Editor.ComputeAcSweep(1.0, 100e3, 48, out string? error) is { } sweep)
+            new BodeWindow(sweep) { Owner = this }.Show();
+        else
+            StatusText.Text = error ?? "AC analysis failed.";
+        Editor.Focus();
+    }
+
+    // ------------------------------------------------------------------ files
+
+    private void OnNew(object sender, RoutedEventArgs e) => NewDocument();
+    private void OnOpen(object sender, RoutedEventArgs e) => OpenDocument();
+    private void OnSave(object sender, RoutedEventArgs e) => Save();
+
+    private void NewDocument()
+    {
+        if (!ConfirmDiscardChanges())
+            return;
+        Editor.SetDocument(new SchematicDocument());
+        SetCurrentFile(null);
+    }
+
+    private void OpenDocument()
+    {
+        if (!ConfirmDiscardChanges())
+            return;
+
+        var dialog = new OpenFileDialog { Filter = FileFilter + "|All files (*.*)|*.*" };
+        if (dialog.ShowDialog(this) != true)
+            return;
 
         try
         {
-            var loadedDoc = JsonIo.LoadFromFile(dlg.FileName, out var savedProbes);
-            Canvas.SetDocument(loadedDoc);
-            Canvas.LoadProbes(savedProbes);
-            _currentPath = dlg.FileName;
-            Title = "Schematic Editor — " + Path.GetFileName(dlg.FileName);
+            SchematicDocument doc = JsonIo.LoadFromFile(dialog.FileName, out List<ProbeInfo> probes);
+            Editor.SetDocument(doc);
+            Editor.LoadProbes(probes);
+            SetCurrentFile(dialog.FileName);
         }
         catch (Exception ex)
         {
@@ -242,43 +221,74 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnSave(object sender, RoutedEventArgs e)
-    {
-        var dlg = new SaveFileDialog
-        {
-            Filter = "Schematic (*.schem.json)|*.schem.json",
-            FileName = _currentPath is not null ? Path.GetFileName(_currentPath) : "untitled.schem.json",
-        };
-        if (dlg.ShowDialog(this) != true) return;
+    /// <summary>Saves to the current file, or asks for one. False when cancelled or failed.</summary>
+    private bool Save() => _currentPath is null ? SaveAs() : SaveTo(_currentPath);
 
+    private bool SaveAs()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Filter = FileFilter,
+            FileName = _currentPath is null ? "untitled.schem.json" : Path.GetFileName(_currentPath),
+        };
+        return dialog.ShowDialog(this) == true && SaveTo(dialog.FileName);
+    }
+
+    private bool SaveTo(string path)
+    {
         try
         {
-            JsonIo.SaveToFile(Canvas.Document, dlg.FileName, Canvas.ExportProbes());
-            _currentPath = dlg.FileName;
-            Title = "Schematic Editor — " + Path.GetFileName(dlg.FileName);
-            StatusText.Text = "Saved " + dlg.FileName;
+            File.WriteAllText(path, CurrentJson());
+            SetCurrentFile(path);
+            StatusText.Text = "Saved " + path;
+            return true;
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Save failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 
-    private void OnExportDxf(object sender, RoutedEventArgs e) =>
-        ExportWith("DXF (*.dxf)|*.dxf", "schematic.dxf", DxfExporter.ExportToFile);
+    // The document as it would be saved, probes and switch positions included.
+    private string CurrentJson() => JsonIo.Save(Editor.Document, Editor.ExportProbes());
 
-    private void OnExportSvg(object sender, RoutedEventArgs e) =>
-        ExportWith("SVG (*.svg)|*.svg", "schematic.svg", SvgExporter.ExportToFile);
-
-    private void ExportWith(string filter, string defaultName, Action<SchematicDocument, string> export)
+    private void SetCurrentFile(string? path)
     {
-        var dlg = new SaveFileDialog { Filter = filter, FileName = defaultName };
-        if (dlg.ShowDialog(this) != true) return;
+        _currentPath = path;
+        _savedJson = CurrentJson();
+        Title = path is null ? AppTitle : $"{AppTitle} — {Path.GetFileName(path)}";
+    }
+
+    /// <summary>Offers to save the changes before they would be lost. False when the user cancels.</summary>
+    private bool ConfirmDiscardChanges()
+    {
+        if (CurrentJson() == _savedJson)
+            return true;
+
+        string name = _currentPath is null ? "the new schematic" : Path.GetFileName(_currentPath);
+        return MessageBox.Show(this, $"Save the changes to {name}?", AppTitle, MessageBoxButton.YesNoCancel, MessageBoxImage.Question) switch
+        {
+            MessageBoxResult.Yes => Save(),
+            MessageBoxResult.No => true,
+            _ => false,
+        };
+    }
+
+    private void OnExportDxf(object sender, RoutedEventArgs e) => Export("DXF (*.dxf)|*.dxf", "schematic.dxf", DxfExporter.ExportToFile);
+
+    private void OnExportSvg(object sender, RoutedEventArgs e) => Export("SVG (*.svg)|*.svg", "schematic.svg", SvgExporter.ExportToFile);
+
+    private void Export(string filter, string defaultName, Action<SchematicDocument, string> export)
+    {
+        var dialog = new SaveFileDialog { Filter = filter, FileName = defaultName };
+        if (dialog.ShowDialog(this) != true)
+            return;
 
         try
         {
-            export(Canvas.Document, dlg.FileName);
-            StatusText.Text = "Exported " + dlg.FileName;
+            export(Editor.Document, dialog.FileName);
+            StatusText.Text = "Exported " + dialog.FileName;
         }
         catch (Exception ex)
         {
@@ -286,7 +296,7 @@ public partial class MainWindow : Window
         }
     }
 
-    // ------------------------------------------------------------ analysis
+    // ------------------------------------------------------------------ analysis
 
     private void OnNetlist(object sender, RoutedEventArgs e)
     {
@@ -299,7 +309,7 @@ public partial class MainWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new TextBox
             {
-                Text = Canvas.CurrentNetlist.ToText(),
+                Text = Editor.CurrentNetlist.ToText(),
                 IsReadOnly = true,
                 FontFamily = new FontFamily("Consolas"),
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -312,29 +322,30 @@ public partial class MainWindow : Window
 
     private void OnErc(object sender, RoutedEventArgs e)
     {
-        var issues = ErcChecker.Check(Canvas.Document, Canvas.CurrentNetlist);
-
-        List<ErcListItem> items = issues.Count == 0
-            ? [new ErcListItem("No issues found.", OkDot, null)]
-            : [.. issues.Select(i => new ErcListItem(
-                i.Message,
-                i.Severity == ErcSeverity.Error ? ErrorDot : WarningDot,
-                i.Location))];
-        ErcList.ItemsSource = items;
-
+        int issues = RunErc();
         ErcPanel.Visibility = Visibility.Visible;
-        StatusText.Text = $"ERC: {issues.Count} issue(s)";
+        StatusText.Text = $"ERC: {issues} issue(s)";
     }
 
-    private void OnCloseErcPanel(object sender, RoutedEventArgs e) =>
-        ErcPanel.Visibility = Visibility.Collapsed;
+    // Fills the ERC panel, which stays up to date while it is open. Gives the number of issues.
+    private int RunErc()
+    {
+        List<ErcIssue> issues = ErcChecker.Check(Editor.Document, Editor.CurrentNetlist);
+        List<ErcListItem> items = issues.Count == 0
+            ? [new ErcListItem("No issues found.", OkDot, null)]
+            : [.. issues.Select(i => new ErcListItem(i.Message, i.Severity == ErcSeverity.Error ? ErrorDot : WarningDot, i.Location))];
+        ErcList.ItemsSource = items;
+        return issues.Count;
+    }
+
+    private void OnCloseErcPanel(object sender, RoutedEventArgs e) => ErcPanel.Visibility = Visibility.Collapsed;
 
     private void OnErcItemActivate(object sender, RoutedEventArgs e)
     {
-        if (ErcList.SelectedItem is ErcListItem { Location: { } loc })
+        if (ErcList.SelectedItem is ErcListItem { Location: { } location })
         {
-            Canvas.CenterOn(loc);
-            Canvas.Focus();
+            Editor.CenterOn(location);
+            Editor.Focus();
         }
     }
 }

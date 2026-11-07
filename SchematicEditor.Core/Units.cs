@@ -3,123 +3,155 @@ using System.Globalization;
 namespace SchematicEditor.Core;
 
 /// <summary>
-/// Parses component values like "10k", "4.7k", "100n", "12V", "50Hz", "12V 5W".
-/// Multiplier prefixes are case-sensitive where it matters (m = milli, M = mega).
+/// Values with SI prefixes: "10k", "4.7k", "100n", "12V", "50Hz", "2Meg". Prefixes are
+/// case-sensitive where it matters (m is milli, M mega); a trailing unit is optional.
 /// </summary>
 public static class Units
 {
-    /// <summary>Parse a single magnitude with an optional SI prefix and unit ("4.7kOhm" → 4700).</summary>
+    private static readonly string[] UnitWords = ["V", "A", "W", "Hz", "F", "H", "Ohm", "R", "Ω", "Ω"];
+
+    /// <summary>Parses a magnitude with an optional prefix and unit: "4.7kOhm" is 4700.</summary>
     public static bool TryParse(string? text, out double value)
     {
         value = 0;
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        text = text.Trim();
+        ReadOnlySpan<char> s = text.AsSpan().Trim();
 
-        int i = 0;
-        while (i < text.Length && (char.IsDigit(text[i]) || text[i] is '.' or '-' or '+'))
-            i++;
-        if (i == 0) return false;
-
-        if (!double.TryParse(text[..i], NumberStyles.Float, CultureInfo.InvariantCulture, out double number))
+        int end = 0;
+        while (end < s.Length && (char.IsAsciiDigit(s[end]) || s[end] is '.' or '-' or '+'))
+            end++;
+        if (end == 0 || !double.TryParse(s[..end], NumberStyles.Float, CultureInfo.InvariantCulture, out double number))
             return false;
 
-        string rest = text[i..].Trim();
+        ReadOnlySpan<char> rest = s[end..].TrimStart();
         double multiplier = 1;
-
-        if (rest.Length > 0)
+        if (rest.StartsWith("Meg", StringComparison.OrdinalIgnoreCase))
         {
-            // "Meg" is the only multi-letter multiplier worth supporting.
-            if (rest.StartsWith("Meg", StringComparison.OrdinalIgnoreCase))
-            {
-                multiplier = 1e6;
-                rest = rest[3..];
-            }
-            else if (!IsUnitWord(rest))
-            {
-                multiplier = rest[0] switch
-                {
-                    'p' => 1e-12,
-                    'n' => 1e-9,
-                    'u' or '\u00b5' => 1e-6,
-                    'm' => 1e-3,
-                    'k' or 'K' => 1e3,
-                    'M' => 1e6,
-                    'G' => 1e9,
-                    _ => double.NaN,
-                };
-                if (double.IsNaN(multiplier)) return false;
-                rest = rest[1..];
-            }
+            multiplier = 1e6;
+            rest = rest[3..];
+        }
+        else if (rest.Length > 0 && !IsUnit(rest))
+        {
+            multiplier = Multiplier(rest[0]);
+            if (double.IsNaN(multiplier))
+                return false;
+            rest = rest[1..];
         }
 
-        if (rest.Length > 0 && !IsUnitWord(rest)) return false;
+        if (rest.Length > 0 && !IsUnit(rest))
+            return false;
 
         value = number * multiplier;
         return true;
     }
 
-    private static bool IsUnitWord(string s) =>
-        s.Equals("V", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("A", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("W", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("Hz", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("F", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("H", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("Ohm", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("R", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("\u03a9", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Parse "12V 5W" style lamp ratings. Returns resistance and rated power.</summary>
+    /// <summary>
+    /// Parses a lamp: a rating such as "12V 5W", or a resistance with an optional rated power such
+    /// as "28.8 5W". Gives the lamp's resistance and rated power.
+    /// </summary>
     public static bool TryParseLampRating(string? text, out double resistance, out double ratedPower)
     {
         resistance = 100;
         ratedPower = 1;
-        if (string.IsNullOrWhiteSpace(text)) return false;
 
         double? volts = null, watts = null, ohms = null;
-        foreach (var part in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        foreach (string part in Words(text))
         {
-            if (part.EndsWith('W') && TryParse(part, out double w)) watts = w;
-            else if (part.EndsWith('V') && TryParse(part, out double v)) volts = v;
-            else if (TryParse(part, out double r)) ohms = r;
+            if (!TryParse(part, out double v))
+                continue;
+            if (part.EndsWith('W') || part.EndsWith('w'))
+                watts = v;
+            else if (part.EndsWith('V') || part.EndsWith('v'))
+                volts = v;
+            else
+                ohms = v;
         }
 
-        if (volts is { } vv && watts is { } ww && ww > 0)
+        if (volts is > 0 && watts is > 0)
         {
-            resistance = vv * vv / ww;
-            ratedPower = ww;
+            resistance = volts.Value * volts.Value / watts.Value;
+            ratedPower = watts.Value;
             return true;
         }
-        if (ohms is { } rr and > 0)
+        if (ohms is > 0)
         {
-            resistance = rr;
-            ratedPower = watts ?? 1;
+            resistance = ohms.Value;
+            ratedPower = watts is > 0 ? watts.Value : 1;
             return true;
         }
         return false;
     }
 
-    /// <summary>Parse "5V 50Hz" style AC source specs (amplitude + frequency).</summary>
+    /// <summary>Parses an AC source such as "5V 50Hz": amplitude and frequency, either of which may be left out.</summary>
     public static bool TryParseAcSpec(string? text, out double amplitude, out double frequency)
     {
         amplitude = 5;
         frequency = 50;
-        if (string.IsNullOrWhiteSpace(text)) return false;
 
         bool any = false;
-        foreach (var part in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        foreach (string part in Words(text))
         {
-            if (part.EndsWith("Hz", StringComparison.OrdinalIgnoreCase) && TryParse(part, out double f))
-            {
-                frequency = f;
-                any = true;
-            }
-            else if (TryParse(part, out double a))
-            {
-                amplitude = a;
-                any = true;
-            }
+            if (!TryParse(part, out double v))
+                continue;
+            if (part.EndsWith("Hz", StringComparison.OrdinalIgnoreCase))
+                frequency = v;
+            else
+                amplitude = v;
+            any = true;
         }
         return any;
     }
+
+    /// <summary>Engineering notation for display: 0.0032 with unit "A" is "3.2 mA", without a unit "3.2m".</summary>
+    public static string Format(double value, string unit = "")
+    {
+        if (Math.Abs(value) < 1e-12)
+            return unit.Length == 0 ? "0" : "0 " + unit;
+
+        (double scale, string prefix) = Scale(Math.Abs(value), ascii: false);
+        string number = (value * scale).ToString("0.###", CultureInfo.InvariantCulture);
+        return unit.Length == 0 ? number + prefix : $"{number} {prefix}{unit}";
+    }
+
+    /// <summary>A component value as the parser reads it back: 4700 is "4.7k", 1e-7 "100n", 2e6 "2Meg".</summary>
+    public static string FormatValue(double value)
+    {
+        (double scale, string prefix) = Scale(Math.Abs(value), ascii: true);
+        return (value * scale).ToString("0.###", CultureInfo.InvariantCulture) + prefix;
+    }
+
+    private static (double Scale, string Prefix) Scale(double magnitude, bool ascii) => magnitude switch
+    {
+        >= 1e9 => (1e-9, "G"),
+        >= 1e6 => (1e-6, ascii ? "Meg" : "M"),
+        >= 1e3 => (1e-3, "k"),
+        >= 1 => (1, ""),
+        >= 1e-3 => (1e3, "m"),
+        >= 1e-6 => (1e6, ascii ? "u" : "µ"),
+        >= 1e-9 => (1e9, "n"),
+        _ => (1e12, "p"),
+    };
+
+    private static double Multiplier(char prefix) => prefix switch
+    {
+        'p' => 1e-12,
+        'n' => 1e-9,
+        'u' or 'µ' or 'μ' => 1e-6,
+        'm' => 1e-3,
+        'k' or 'K' => 1e3,
+        'M' => 1e6,
+        'G' => 1e9,
+        _ => double.NaN,
+    };
+
+    private static bool IsUnit(ReadOnlySpan<char> s)
+    {
+        foreach (string unit in UnitWords)
+        {
+            if (s.Equals(unit, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static string[] Words(string? text) => (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
 }

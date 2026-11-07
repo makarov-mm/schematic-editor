@@ -1,12 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net11.0-windows7.0</TargetFramework>
+    <TargetFramework>net11.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <LangVersion>latest</LangVersion>
-    <!-- Allows `dotnet build` of the solution on non-Windows CI to at least restore. -->
+    <!-- Lets `dotnet build` of the solution at least restore on a non-Windows CI machine. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
   <ItemGroup>

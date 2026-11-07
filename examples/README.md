@@ -1,6 +1,6 @@
 # Examples
 
-Open any file with **File → Open** and press **▶ Run** — every example ships
+Open any file (**Open**, Ctrl+O) and press **▶ Run** — every example ships
 with probes already placed on the interesting nets, so the oscilloscope lights
 up immediately. Add your own with the probe tool (click a wire for voltage, a
 component body for current); probes are saved with the file.

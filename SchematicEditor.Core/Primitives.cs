@@ -1,40 +1,59 @@
 namespace SchematicEditor.Core;
 
 /// <summary>
-/// Backend-agnostic drawing primitives in symbol-local coordinates.
-/// Renderers and exporters interpret these; the core never touches a GUI toolkit.
+/// Backend-agnostic drawing primitives in symbol coordinates (origin at the symbol centre,
+/// Y down). Renderers and exporters interpret them; the core never touches a GUI toolkit.
 /// </summary>
-public abstract record DrawPrimitive;
+public abstract record DrawPrimitive
+{
+    /// <summary>
+    /// The primitive moved by a rigid motion, e.g. from symbol into world coordinates. Arcs come
+    /// back flattened to polylines, so consumers of mapped primitives never see an arc; text stays
+    /// upright and only its anchor moves.
+    /// </summary>
+    public abstract DrawPrimitive Map(Func<Vec2, Vec2> map);
+}
 
-public sealed record LinePrim(Vec2 A, Vec2 B) : DrawPrimitive;
+public sealed record LinePrim(Vec2 A, Vec2 B) : DrawPrimitive
+{
+    public override DrawPrimitive Map(Func<Vec2, Vec2> map) => new LinePrim(map(A), map(B));
+}
 
-/// <summary>Closed polygon. Filled = solid body (e.g. diode triangle).</summary>
-public sealed record PolyPrim(Vec2[] Points, bool Closed, bool Filled) : DrawPrimitive;
+/// <summary>A polyline, or a polygon when Closed. Filled polygons are solid (e.g. the diode triangle).</summary>
+public sealed record PolyPrim(Vec2[] Points, bool Closed, bool Filled) : DrawPrimitive
+{
+    public override DrawPrimitive Map(Func<Vec2, Vec2> map) => this with { Points = [.. Points.Select(map)] };
+}
 
-public sealed record CirclePrim(Vec2 Center, double Radius, bool Filled) : DrawPrimitive;
+public sealed record CirclePrim(Vec2 Center, double Radius, bool Filled) : DrawPrimitive
+{
+    public override DrawPrimitive Map(Func<Vec2, Vec2> map) => this with { Center = map(Center) };
+}
 
-/// <summary>
-/// Circular arc, angles in degrees, counter-clockwise from StartDeg to EndDeg
-/// in symbol-local coordinates (Y down). Flattened to a polyline for rendering.
-/// </summary>
+/// <summary>A circular arc from StartDeg to EndDeg, angles measured from +X towards +Y.</summary>
 public sealed record ArcPrim(Vec2 Center, double Radius, double StartDeg, double EndDeg) : DrawPrimitive
 {
-    /// <summary>Flatten to points in local coordinates.</summary>
-    public Vec2[] Flatten(int segments = 12)
+    private const int Segments = 12;
+
+    public Vec2[] Flatten()
     {
         double a0 = StartDeg * Math.PI / 180.0;
         double a1 = EndDeg * Math.PI / 180.0;
-        var pts = new Vec2[segments + 1];
-
-        for (int i = 0; i <= segments; i++)
+        var points = new Vec2[Segments + 1];
+        for (int i = 0; i <= Segments; i++)
         {
-            double a = a0 + (a1 - a0) * i / segments;
-            pts[i] = new Vec2(Center.X + Radius * Math.Cos(a), Center.Y + Radius * Math.Sin(a));
+            double a = a0 + (a1 - a0) * i / Segments;
+            points[i] = new Vec2(Center.X + Radius * Math.Cos(a), Center.Y + Radius * Math.Sin(a));
         }
-
-        return pts;
+        return points;
     }
+
+    public override DrawPrimitive Map(Func<Vec2, Vec2> map) =>
+        new PolyPrim([.. Flatten().Select(map)], Closed: false, Filled: false);
 }
 
-/// <summary>Small text inside a symbol body (e.g. polarity mark). Anchor is the text center.</summary>
-public sealed record TextPrim(Vec2 Anchor, string Text, double Height) : DrawPrimitive;
+/// <summary>A short text inside a symbol body (e.g. a polarity mark), centred on Anchor.</summary>
+public sealed record TextPrim(Vec2 Anchor, string Text, double Height) : DrawPrimitive
+{
+    public override DrawPrimitive Map(Func<Vec2, Vec2> map) => this with { Anchor = map(Anchor) };
+}

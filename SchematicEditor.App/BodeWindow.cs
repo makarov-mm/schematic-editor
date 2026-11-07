@@ -2,155 +2,138 @@ using System.Globalization;
 using System.Numerics;
 using System.Windows;
 using System.Windows.Media;
+using SchematicEditor.Core;
 
 namespace SchematicEditor.App;
 
-/// <summary>
-/// AC analysis result window: log-log magnitude on top, phase below, one curve per voltage
-/// probe. Everything is drawn by hand in one FrameworkElement - same approach as the scope.
-/// </summary>
+/// <summary>The frequency response of one voltage probe.</summary>
+public sealed record AcTrace(string Label, Color Color, Complex[] Response);
+
+/// <summary>A frequency sweep: the frequencies and one response per probe.</summary>
+public sealed record AcSweep(double[] Frequencies, IReadOnlyList<AcTrace> Traces);
+
+/// <summary>The result of an AC analysis: magnitude on log-log axes above, phase below, a curve per voltage probe.</summary>
 public sealed class BodeWindow : Window
 {
-    public BodeWindow(List<(string Label, Color Color, double[] Freq, Complex[] Response)> traces)
+    public BodeWindow(AcSweep sweep)
     {
         Title = "AC Analysis";
         Width = 940;
         Height = 640;
-        Background = new SolidColorBrush(Color.FromRgb(0x12, 0x16, 0x1C));
-        Content = new BodePlot(traces);
+        Background = PlotStyle.Background;
+        Content = new BodePlot(sweep);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
     }
 }
 
-internal sealed class BodePlot : FrameworkElement
+internal sealed class BodePlot(AcSweep sweep) : FrameworkElement
 {
-    private readonly List<(string Label, Color Color, double[] Freq, Complex[] Response)> _traces;
-
-    private static readonly Pen GridPen = FrozenPen(Color.FromRgb(0x26, 0x2E, 0x38), 1);
-    private static readonly Pen AxisPen = FrozenPen(Color.FromRgb(0x4A, 0x57, 0x66), 1);
-    private static readonly Brush TextBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x9A, 0xA5, 0xB4)));
-    private static readonly Typeface Mono = new("Consolas");
-
     private const double MarginLeft = 56;
     private const double MarginRight = 16;
     private const double MarginTop = 28;
     private const double MarginBottom = 30;
     private const double PanelGap = 26;
 
-    public BodePlot(List<(string, Color, double[], Complex[])> traces) => _traces = traces;
-
-    private static Brush Freeze(Brush b) { b.Freeze(); return b; }
-
-    private static Pen FrozenPen(Color c, double w)
-    {
-        var p = new Pen(new SolidColorBrush(c), w);
-        p.Freeze();
-        return p;
-    }
-
     protected override void OnRender(DrawingContext dc)
     {
         double w = ActualWidth, h = ActualHeight;
-        if (w < 100 || h < 100 || _traces.Count == 0 || _traces[0].Freq.Length < 2) { return; }
+        double[] f = sweep.Frequencies;
+        if (w < 100 || h < 100 || sweep.Traces.Count == 0 || f.Length < 2)
+            return;
 
-        double[] freq = _traces[0].Freq;
-        double fMin = freq[0], fMax = freq[^1];
-        double plotW = w - MarginLeft - MarginRight;
-        double magH = (h - MarginTop - MarginBottom - PanelGap) * 0.62;
-        double phH = (h - MarginTop - MarginBottom - PanelGap) * 0.38;
-        double magTop = MarginTop;
-        double phTop = MarginTop + magH + PanelGap;
+        double plotWidth = w - MarginLeft - MarginRight;
+        double plotsHeight = h - MarginTop - MarginBottom - PanelGap;
+        double magnitudeTop = MarginTop, magnitudeHeight = plotsHeight * 0.62;
+        double phaseTop = MarginTop + magnitudeHeight + PanelGap, phaseHeight = plotsHeight * 0.38;
 
-        // Magnitude range across all traces, clamped to sane decades.
-        double magMin = double.MaxValue, magMax = double.MinValue;
-        foreach (var t in _traces)
+        // The magnitude axis spans whole decades: at least two, at most eight.
+        double magnitudeMin = sweep.Traces.SelectMany(t => t.Response).Min(v => Math.Max(v.Magnitude, 1e-9));
+        double magnitudeMax = sweep.Traces.SelectMany(t => t.Response).Max(v => Math.Max(v.Magnitude, 1e-9));
+        double logHigh = Math.Ceiling(Math.Log10(magnitudeMax));
+        double logLow = Math.Clamp(Math.Floor(Math.Log10(magnitudeMin)), logHigh - 8, logHigh - 2);
+
+        double logFMin = Math.Log10(f[0]), logFMax = Math.Log10(f[^1]);
+        double X(double frequency) => MarginLeft + (Math.Log10(frequency) - logFMin) / (logFMax - logFMin) * plotWidth;
+        double YMagnitude(double m) => magnitudeTop + magnitudeHeight - (Math.Clamp(Math.Log10(m), logLow, logHigh) - logLow) / (logHigh - logLow) * magnitudeHeight;
+        double YPhase(double degrees) => phaseTop + phaseHeight - (degrees + 180.0) / 360.0 * phaseHeight;
+
+        // Frequency decades, shared by both panels.
+        for (double d = Math.Ceiling(logFMin); d <= Math.Floor(logFMax); d++)
         {
-            foreach (Complex v in t.Response)
-            {
-                double m = Math.Max(v.Magnitude, 1e-9);
-                magMin = Math.Min(magMin, m);
-                magMax = Math.Max(magMax, m);
-            }
-        }
-        double logLo = Math.Floor(Math.Log10(magMin));
-        double logHi = Math.Ceiling(Math.Log10(magMax));
-        if (logHi - logLo < 2) { logLo = logHi - 2; }
-        if (logHi - logLo > 8) { logLo = logHi - 8; }
-
-        double X(double f) => MarginLeft + (Math.Log10(f) - Math.Log10(fMin)) / (Math.Log10(fMax) - Math.Log10(fMin)) * plotW;
-        double YMag(double m) => magTop + magH - (Math.Log10(Math.Clamp(m, Math.Pow(10, logLo), Math.Pow(10, logHi))) - logLo) / (logHi - logLo) * magH;
-        double YPh(double deg) => phTop + phH - (deg + 180.0) / 360.0 * phH;
-
-        // Frequency decades: vertical grid shared by both panels.
-        for (double d = Math.Ceiling(Math.Log10(fMin)); d <= Math.Floor(Math.Log10(fMax)); d++)
-        {
-            double f = Math.Pow(10, d);
-            double x = X(f);
-            dc.DrawLine(GridPen, new Point(x, magTop), new Point(x, magTop + magH));
-            dc.DrawLine(GridPen, new Point(x, phTop), new Point(x, phTop + phH));
-            var label = Text(FormatFreq(f), 11, TextBrush);
+            double frequency = Math.Pow(10, d);
+            double x = X(frequency);
+            dc.DrawLine(PlotStyle.GridPen, new Point(x, magnitudeTop), new Point(x, magnitudeTop + magnitudeHeight));
+            dc.DrawLine(PlotStyle.GridPen, new Point(x, phaseTop), new Point(x, phaseTop + phaseHeight));
+            FormattedText label = Text(FormatFrequency(frequency), 11, PlotStyle.TextBrush);
             dc.DrawText(label, new Point(x - label.Width / 2, h - MarginBottom + 6));
         }
 
         // Magnitude decades.
-        for (double d = logLo; d <= logHi; d++)
+        for (double d = logLow; d <= logHigh; d++)
         {
-            double y = YMag(Math.Pow(10, d));
-            dc.DrawLine(GridPen, new Point(MarginLeft, y), new Point(MarginLeft + plotW, y));
-            var label = Text(FormatMag(Math.Pow(10, d)), 11, TextBrush);
+            double y = YMagnitude(Math.Pow(10, d));
+            dc.DrawLine(PlotStyle.GridPen, new Point(MarginLeft, y), new Point(MarginLeft + plotWidth, y));
+            FormattedText label = Text(FormatMagnitude(Math.Pow(10, d)), 11, PlotStyle.TextBrush);
             dc.DrawText(label, new Point(MarginLeft - label.Width - 6, y - label.Height / 2));
         }
 
-        // Phase grid: every 90 degrees, zero line brighter.
-        for (int deg = -180; deg <= 180; deg += 90)
+        // Phase every 90 degrees, the zero line brighter.
+        for (int degrees = -180; degrees <= 180; degrees += 90)
         {
-            double y = YPh(deg);
-            dc.DrawLine(deg == 0 ? AxisPen : GridPen, new Point(MarginLeft, y), new Point(MarginLeft + plotW, y));
-            var label = Text($"{deg}\u00b0", 11, TextBrush);
+            double y = YPhase(degrees);
+            dc.DrawLine(degrees == 0 ? PlotStyle.AxisPen : PlotStyle.GridPen, new Point(MarginLeft, y), new Point(MarginLeft + plotWidth, y));
+            FormattedText label = Text(degrees.ToString(CultureInfo.InvariantCulture) + "°", 11, PlotStyle.TextBrush);
             dc.DrawText(label, new Point(MarginLeft - label.Width - 6, y - label.Height / 2));
         }
 
-        foreach (var t in _traces)
+        foreach (AcTrace trace in sweep.Traces)
         {
-            var pen = new Pen(new SolidColorBrush(t.Color), 1.7) { LineJoin = PenLineJoin.Round };
-            pen.Freeze();
-
-            var mag = new StreamGeometry();
-            using (var ctx = mag.Open())
-            {
-                ctx.BeginFigure(new Point(X(t.Freq[0]), YMag(t.Response[0].Magnitude)), false, false);
-                for (int i = 1; i < t.Freq.Length; i++) { ctx.LineTo(new Point(X(t.Freq[i]), YMag(t.Response[i].Magnitude)), true, false); }
-            }
-            mag.Freeze();
-            dc.DrawGeometry(null, pen, mag);
-
-            var ph = new StreamGeometry();
-            using (var ctx = ph.Open())
-            {
-                ctx.BeginFigure(new Point(X(t.Freq[0]), YPh(t.Response[0].Phase * 180.0 / Math.PI)), false, false);
-                for (int i = 1; i < t.Freq.Length; i++) { ctx.LineTo(new Point(X(t.Freq[i]), YPh(t.Response[i].Phase * 180.0 / Math.PI)), true, false); }
-            }
-            ph.Freeze();
-            dc.DrawGeometry(null, pen, ph);
+            Pen pen = Paint.Pen(Paint.Brush(trace.Color), 1.7, round: true);
+            double[] phase = [.. trace.Response.Select(v => v.Phase * 180.0 / Math.PI)];
+            dc.DrawGeometry(null, pen, Curve(f.Length, i => new Point(X(f[i]), YMagnitude(trace.Response[i].Magnitude)), _ => false));
+            // The phase wraps around at ±180°: no line across the plot there.
+            dc.DrawGeometry(null, pen, Curve(f.Length, i => new Point(X(f[i]), YPhase(phase[i])), i => Math.Abs(phase[i] - phase[i - 1]) > 180));
         }
 
-        // Titles and legend.
-        dc.DrawText(Text("MAGNITUDE", 10, TextBrush), new Point(MarginLeft, magTop - 16));
-        dc.DrawText(Text("PHASE", 10, TextBrush), new Point(MarginLeft, phTop - 16));
-        double ly = magTop + 4;
-        foreach (var t in _traces)
+        dc.DrawText(Text("MAGNITUDE", 10, PlotStyle.TextBrush), new Point(MarginLeft, magnitudeTop - 16));
+        dc.DrawText(Text("PHASE", 10, PlotStyle.TextBrush), new Point(MarginLeft, phaseTop - 16));
+
+        double legendY = magnitudeTop + 4;
+        foreach (AcTrace trace in sweep.Traces)
         {
-            var brush = new SolidColorBrush(t.Color);
-            brush.Freeze();
-            var ft = Text(t.Label, 12, brush);
-            dc.DrawText(ft, new Point(MarginLeft + plotW - ft.Width - 8, ly));
-            ly += ft.Height + 2;
+            FormattedText legend = Text(trace.Label, 12, Paint.Brush(trace.Color));
+            dc.DrawText(legend, new Point(MarginLeft + plotWidth - legend.Width - 8, legendY));
+            legendY += legend.Height + 2;
         }
     }
 
-    private static string FormatFreq(double f) => f >= 1e6 ? $"{f / 1e6:0.#} MHz" : f >= 1e3 ? $"{f / 1e3:0.#} kHz" : $"{f:0.#} Hz";
+    /// <summary>A polyline through points 0 to count - 1 that starts afresh where <paramref name="breakBefore"/> says so.</summary>
+    private static StreamGeometry Curve(int count, Func<int, Point> point, Func<int, bool> breakBefore)
+    {
+        var geometry = new StreamGeometry();
+        using (StreamGeometryContext context = geometry.Open())
+        {
+            context.BeginFigure(point(0), isFilled: false, isClosed: false);
+            for (int i = 1; i < count; i++)
+            {
+                if (breakBefore(i))
+                    context.BeginFigure(point(i), isFilled: false, isClosed: false);
+                else
+                    context.LineTo(point(i), isStroked: true, isSmoothJoin: false);
+            }
+        }
+        geometry.Freeze();
+        return geometry;
+    }
 
-    private static string FormatMag(double m) => m >= 1 ? $"{m:0.###} V" : m >= 1e-3 ? $"{m * 1e3:0.###} mV" : $"{m * 1e6:0.###} \u00b5V";
+    private static string FormatFrequency(double f) => f switch
+    {
+        >= 1e6 => string.Create(CultureInfo.InvariantCulture, $"{f / 1e6:0.#} MHz"),
+        >= 1e3 => string.Create(CultureInfo.InvariantCulture, $"{f / 1e3:0.#} kHz"),
+        _ => string.Create(CultureInfo.InvariantCulture, $"{f:0.#} Hz"),
+    };
 
-    private FormattedText Text(string s, double size, Brush brush) => new(s, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+    private static string FormatMagnitude(double m) => Units.Format(m, "V");
+
+    private FormattedText Text(string text, double size, Brush brush) => PlotStyle.Text(this, text, size, brush);
 }

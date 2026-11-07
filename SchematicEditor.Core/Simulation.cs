@@ -3,646 +3,580 @@ using System.Numerics;
 namespace SchematicEditor.Core;
 
 /// <summary>
-/// Time-domain circuit simulator built on Modified Nodal Analysis.
+/// Circuit simulation by Modified Nodal Analysis: in the time domain (<see cref="Step"/>) and as a
+/// small-signal frequency analysis (<see cref="SolveAc"/>).
 ///
-/// Reactive elements use backward-Euler companion models (L-stable, so stiff
-/// circuits like an ideal source across a small resistance stay well-behaved).
-/// Diodes are piecewise-linear (off / on with Von and Ron) and resolved by
-/// state iteration within each time step. Switches read the live
-/// <see cref="SymbolInstance.StateOn"/> flag, so the user can toggle them
-/// while the simulation runs. Fuses accumulate no history: they blow the
-/// moment their current rating is exceeded and stay blown until Reset.
+/// Capacitors and inductors use backward-Euler companion models (L-stable, so even an ideal source
+/// across a closed switch stays calm). Diodes are piecewise linear, off or on with Von and Ron, and
+/// resolved by state iteration within each step. Switches read the live
+/// <see cref="SymbolInstance.StateOn"/>, so they can be toggled while the simulation runs. A fuse
+/// blows the moment its rated current is exceeded and stays blown until <see cref="Reset"/>.
 ///
-/// The matrix is assembled and solved from scratch every step with dense
-/// Gaussian elimination — at schematic scale (tens of nodes) this is
-/// microseconds and keeps the code obvious.
+/// The dense system is assembled and solved from scratch every step: at schematic scale (tens of
+/// nodes) that takes microseconds and keeps the code obvious.
 /// </summary>
 public sealed class CircuitSimulator
 {
-    private enum Kind { Resistor, Lamp, Fuse, Switch, Capacitor, Inductor, Diode, SourceDc, SourceAc }
-
-    private sealed class Element
-    {
-        public required Kind Kind;
-        public required SymbolInstance Symbol;
-        public required int NodeA;          // pin 1 (or anode / plus)
-        public required int NodeB;          // pin 2 (or cathode / minus)
-        public double Value;                // R [Ohm], C [F], L [H], V [V] (DC amplitude)
-        public double Frequency;            // AC only
-        public double RatedPower;           // lamp
-        public double RatedCurrent;         // fuse
-        public int Branch = -1;             // extra MNA unknown (sources, inductors)
-
-        // Per-step state.
-        public double PrevVoltage;          // capacitor
-        public double PrevCurrent;          // inductor
-        public bool DiodeOn;
-        public bool FuseBlown;
-        public double Current;              // last solved current, A→B positive
-    }
-
-    private const double Gmin = 1e-9;
-    private const double SwitchOnR = 1e-3;
-    private const double FuseR = 1e-2;
+    private const double Gmin = 1e-9;   // from every node to ground; also an open switch, a blown fuse, a blocking diode
+    private const double SwitchOnResistance = 1e-3;
+    private const double FuseResistance = 1e-2;
     private const double DiodeVon = 0.7;
     private const double DiodeRon = 0.05;
+    private const int MaxDiodeIterations = 12;
 
-    private readonly List<Element> _elements = [];
-    private readonly Dictionary<Net, int> _netNode = [];
-    private readonly Dictionary<int, Element> _bySymbolId = [];
-    private readonly NetlistResult _netlist;
-    private readonly int _nodeCount;        // non-ground nodes
-    private readonly int _branchCount;
-    private readonly double[,] _a;
-    private readonly double[] _rhs;
-    private readonly double[] _x;
-    private readonly double[] _nodeVoltage; // index 0 = ground
-
-    public double Time { get; private set; }
-    public IReadOnlyList<string> Warnings { get; }
-
-    private CircuitSimulator(NetlistResult netlist, List<Element> elements, Dictionary<Net, int> netNode, int nodeCount, List<string> warnings)
+    private sealed class Element(SymbolInstance symbol, int nodeA, int nodeB)
     {
-        _netlist = netlist;
-        _elements = elements;
-        _netNode = netNode;
-        _nodeCount = nodeCount;
-        Warnings = warnings;
+        public SymbolInstance Symbol { get; } = symbol;
+        public SymbolKind Kind { get; } = symbol.Definition.Kind;
+        public int NodeA { get; } = nodeA;   // pin 1: + terminal, anode
+        public int NodeB { get; } = nodeB;   // pin 2: - terminal, cathode
 
-        int branch = 0;
+        public double Value;                 // Ω, F, H or V; the amplitude of an AC source
+        public double Frequency;             // AC sources, Hz
+        public double RatedPower;            // lamps, W
+        public double RatedCurrent;          // fuses, A
+        public int Branch = -1;              // the row of the element's current (sources, inductors)
 
-        foreach (Element e in elements)
-        {
-            if (e.Kind is Kind.SourceDc or Kind.SourceAc or Kind.Inductor)
-            {
-                e.Branch = branch++;
-            }
-        }
-
-        _branchCount = branch;
-
-        int n = _nodeCount + _branchCount;
-        _a = new double[n, n];
-        _rhs = new double[n];
-        _x = new double[n];
-        _nodeVoltage = new double[_nodeCount + 1];
-
-        foreach (var e in elements)
-        {
-            _bySymbolId[e.Symbol.Id] = e;
-        }
+        // State carried from step to step.
+        public double PreviousVoltage;       // capacitors
+        public double PreviousCurrent;       // inductors
+        public bool DiodeOn;
+        public bool FuseBlown;
+        public double Current;               // from A to B, as last solved
     }
 
-    /// <summary>
-    /// Build a simulator from the document. Returns null when the circuit cannot
-    /// be simulated at all; recoverable oddities are reported as warnings.
-    /// </summary>
-    public static CircuitSimulator? Build(SchematicDocument doc, NetlistResult netlist,
-        out List<string> problems)
-    {
-        problems = [];
-        List<string> warnings = [];
+    private readonly NetlistResult _netlist;
+    private readonly Dictionary<Net, int> _nodeOf;
+    private readonly List<Element> _elements;
+    private readonly Dictionary<SymbolInstance, Element> _elementOf;
+    private readonly int _nodeCount;         // nodes besides ground; node n is unknown n - 1
+    private readonly double[,] _matrix;
+    private readonly double[] _rhs;
+    private readonly double[] _solution;     // node voltages, then branch currents
 
-        // Node numbering: all nets that contain a Ground pin collapse to node 0.
-        Dictionary<Net, int> netNode = [];
-        int next = 1;
-        foreach (var net in netlist.Nets)
+    private CircuitSimulator(NetlistResult netlist, Dictionary<Net, int> nodeOf, int nodeCount, List<Element> elements, List<string> warnings)
+    {
+        _netlist = netlist;
+        _nodeOf = nodeOf;
+        _nodeCount = nodeCount;
+        _elements = elements;
+        _elementOf = elements.ToDictionary(e => e.Symbol);
+        Warnings = warnings;
+
+        int size = nodeCount;
+        foreach (Element e in elements)
         {
-            bool grounded = net.Pins.Any(p => p.Symbol.Definition.Name == "Ground");
-            netNode[net] = grounded ? 0 : next++;
+            if (e.Kind is SymbolKind.DcSource or SymbolKind.AcSource or SymbolKind.Inductor)
+                e.Branch = size++;
         }
 
-        if (netlist.Nets.All(n => netNode[n] != 0))
+        _matrix = new double[size, size];
+        _rhs = new double[size];
+        _solution = new double[size];
+    }
+
+    public double Time { get; private set; }
+
+    /// <summary>What was simulated differently than drawn: unparsable values, skipped symbols.</summary>
+    public IReadOnlyList<string> Warnings { get; }
+
+    /// <summary>Whether there is an AC source to drive a frequency analysis.</summary>
+    public bool HasAcSource => _elements.Exists(e => e.Kind == SymbolKind.AcSource);
+
+    /// <summary>
+    /// Builds a simulator, or returns null with the reasons when the circuit cannot be simulated at
+    /// all. Recoverable oddities end up in <see cref="Warnings"/>.
+    /// </summary>
+    public static CircuitSimulator? Build(SchematicDocument doc, NetlistResult netlist, out List<string> problems)
+    {
+        problems = [];
+        if (!netlist.Nets.Any(n => n.IsGround))
         {
             problems.Add("No ground: place a Ground symbol to define 0 V.");
             return null;
         }
 
-        // Pin → net lookup.
-        Dictionary<(int, string), Net> pinNet = [];
-        foreach (var net in netlist.Nets)
-            foreach (var pin in net.Pins)
-                pinNet[(pin.Symbol.Id, pin.Pin.Name)] = net;
+        // Node 0 is ground; all ground nets are joined in it.
+        var nodeOf = new Dictionary<Net, int>();
+        int nodeCount = 0;
+        foreach (Net net in netlist.Nets)
+            nodeOf[net] = net.IsGround ? 0 : ++nodeCount;
 
+        List<string> warnings = [];
         List<Element> elements = [];
-        bool anySource = false;
-
-        foreach (var sym in doc.Symbols)
+        foreach (SymbolInstance symbol in doc.Symbols)
         {
-            string name = sym.Definition.Name;
-            if (name == "Ground") continue;
-
-            if (name == "NPN")
-            {
-                warnings.Add($"{sym.RefDes}: transistors are not simulated (treated as open).");
+            if (symbol.Definition.Kind == SymbolKind.Ground)
                 continue;
-            }
-
-            var pins = sym.Definition.Pins;
-            if (pins.Count != 2) continue;
-
-            if (!pinNet.TryGetValue((sym.Id, pins[0].Name), out var netA) ||
-                !pinNet.TryGetValue((sym.Id, pins[1].Name), out var netB))
-            {
-                warnings.Add($"{sym.RefDes}: not fully connected, skipped.");
-                continue;
-            }
-
-            var e = new Element
-            {
-                Kind = Kind.Resistor,
-                Symbol = sym,
-                NodeA = netNode[netA],
-                NodeB = netNode[netB],
-            };
-
-            switch (name)
-            {
-                case "Resistor":
-                    e.Kind = Kind.Resistor;
-                    if (!Units.TryParse(sym.Value, out e.Value) || e.Value <= 0)
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 1k.");
-                        e.Value = 1e3;
-                    }
-                    break;
-
-                case "Lamp":
-                    e.Kind = Kind.Lamp;
-                    if (!Units.TryParseLampRating(sym.Value, out e.Value, out e.RatedPower))
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 12V 5W.");
-                        e.Value = 12 * 12 / 5.0;
-                        e.RatedPower = 5;
-                    }
-                    break;
-
-                case "Fuse":
-                    e.Kind = Kind.Fuse;
-                    e.Value = FuseR;
-                    if (!Units.TryParse(sym.Value, out e.RatedCurrent) || e.RatedCurrent <= 0)
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 1A.");
-                        e.RatedCurrent = 1;
-                    }
-                    break;
-
-                case "Switch":
-                    e.Kind = Kind.Switch;
-                    break;
-
-                case "Capacitor":
-                    e.Kind = Kind.Capacitor;
-                    if (!Units.TryParse(sym.Value, out e.Value) || e.Value <= 0)
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 100n.");
-                        e.Value = 100e-9;
-                    }
-                    break;
-
-                case "Inductor":
-                    e.Kind = Kind.Inductor;
-                    if (!Units.TryParse(sym.Value, out e.Value) || e.Value <= 0)
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 10m.");
-                        e.Value = 10e-3;
-                    }
-                    break;
-
-                case "Diode":
-                    e.Kind = Kind.Diode;
-                    break;
-
-                case "VSource" or "Battery":
-                    e.Kind = Kind.SourceDc;
-                    anySource = true;
-                    if (!Units.TryParse(sym.Value, out e.Value))
-                    {
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 5V.");
-                        e.Value = 5;
-                    }
-                    break;
-
-                case "ACSource":
-                    e.Kind = Kind.SourceAc;
-                    anySource = true;
-                    if (!Units.TryParseAcSpec(sym.Value, out e.Value, out e.Frequency))
-                        warnings.Add($"{sym.RefDes}: cannot parse '{sym.Value}', using 5V 50Hz.");
-                    break;
-
-                default:
-                    warnings.Add($"{sym.RefDes}: '{name}' is not simulated.");
-                    continue;
-            }
-
-            elements.Add(e);
+            if (symbol.Definition.Kind == SymbolKind.NpnTransistor)
+                warnings.Add($"{symbol.DisplayName}: transistors are not simulated (treated as open).");
+            else if (CreateElement(symbol, netlist, nodeOf, warnings) is { } element)
+                elements.Add(element);
         }
 
-        if (!anySource)
+        if (!elements.Exists(e => e.Kind.IsVoltageSource))
         {
             problems.Add("No voltage source: add a Battery, VSource or ACSource.");
             return null;
         }
 
-        return new CircuitSimulator(netlist, elements, netNode,
-            netNode.Values.DefaultIfEmpty(0).Max(), warnings);
+        return new CircuitSimulator(netlist, nodeOf, nodeCount, elements, warnings);
     }
 
-    /// <summary>Reset time, reactive state, blown fuses and diode states.</summary>
+    private static Element? CreateElement(SymbolInstance symbol, NetlistResult netlist, Dictionary<Net, int> nodeOf, List<string> warnings)
+    {
+        IReadOnlyList<PinDefinition> pins = symbol.Definition.Pins;
+        if (pins.Count != 2)
+        {
+            warnings.Add($"{symbol.DisplayName}: '{symbol.Definition.Name}' is not simulated.");
+            return null;
+        }
+        if (netlist.NetOf(symbol, pins[0]) is not { } a || netlist.NetOf(symbol, pins[1]) is not { } b)
+        {
+            warnings.Add($"{symbol.DisplayName}: not fully connected, skipped.");
+            return null;
+        }
+
+        var e = new Element(symbol, nodeOf[a], nodeOf[b]);
+        switch (e.Kind)
+        {
+            case SymbolKind.Resistor:
+                e.Value = PositiveValue(symbol, 1e3, "1k", warnings);
+                break;
+
+            case SymbolKind.Capacitor:
+                e.Value = PositiveValue(symbol, 100e-9, "100n", warnings);
+                break;
+
+            case SymbolKind.Inductor:
+                e.Value = PositiveValue(symbol, 10e-3, "10m", warnings);
+                break;
+
+            case SymbolKind.Lamp:
+                if (!Units.TryParseLampRating(symbol.Value, out e.Value, out e.RatedPower))
+                {
+                    warnings.Add(CannotParse(symbol, "12V 5W"));
+                    (e.Value, e.RatedPower) = (12 * 12 / 5.0, 5);
+                }
+                break;
+
+            case SymbolKind.Fuse:
+                e.Value = FuseResistance;
+                e.RatedCurrent = PositiveValue(symbol, 1, "1A", warnings);
+                break;
+
+            case SymbolKind.DcSource:
+                if (!Units.TryParse(symbol.Value, out e.Value))
+                {
+                    warnings.Add(CannotParse(symbol, "5V"));
+                    e.Value = 5;
+                }
+                break;
+
+            case SymbolKind.AcSource:
+                if (!Units.TryParseAcSpec(symbol.Value, out e.Value, out e.Frequency))
+                    warnings.Add(CannotParse(symbol, "5V 50Hz"));
+                break;
+
+            case SymbolKind.Switch or SymbolKind.Diode:
+                break;
+
+            default:
+                warnings.Add($"{symbol.DisplayName}: '{symbol.Definition.Name}' is not simulated.");
+                return null;
+        }
+        return e;
+    }
+
+    private static double PositiveValue(SymbolInstance symbol, double fallback, string fallbackText, List<string> warnings)
+    {
+        if (Units.TryParse(symbol.Value, out double value) && value > 0)
+            return value;
+        warnings.Add(CannotParse(symbol, fallbackText));
+        return fallback;
+    }
+
+    private static string CannotParse(SymbolInstance symbol, string fallback) =>
+        $"{symbol.DisplayName}: cannot parse '{symbol.Value}', using {fallback}.";
+
+    // ------------------------------------------------------------------ transient analysis
+
+    /// <summary>Back to time zero: capacitors and inductors discharged, diodes off, fuses whole.</summary>
     public void Reset()
     {
         Time = 0;
-        foreach (var e in _elements)
+        foreach (Element e in _elements)
         {
-            e.PrevVoltage = 0;
-            e.PrevCurrent = 0;
+            e.PreviousVoltage = 0;
+            e.PreviousCurrent = 0;
             e.DiodeOn = false;
             e.FuseBlown = false;
             e.Current = 0;
         }
-        Array.Clear(_nodeVoltage);
+        Array.Clear(_solution);
     }
 
-    /// <summary>Advance the simulation by one time step.</summary>
+    /// <summary>Advances the simulation by one time step. Throws InvalidOperationException for a singular circuit.</summary>
     public void Step(double dt)
     {
         Time += dt;
 
-        // Diode PWL state iteration: assume states, solve, verify, flip, repeat.
-        for (int iter = 0; ; iter++)
+        // Diodes: assume their states, solve, correct the states that the solution contradicts, repeat.
+        for (int iteration = 0; ; iteration++)
         {
             Assemble(dt);
-            Solve();
-
-            bool consistent = true;
-            foreach (var e in _elements)
-            {
-                if (e.Kind != Kind.Diode) continue;
-                double vd = V(e.NodeA) - V(e.NodeB);
-                if (e.DiodeOn)
-                {
-                    double i = (vd - DiodeVon) / DiodeRon;
-                    if (i < 0) { e.DiodeOn = false; consistent = false; }
-                }
-                else if (vd > DiodeVon)
-                {
-                    e.DiodeOn = true;
-                    consistent = false;
-                }
-            }
-
-            if (consistent || iter >= 12) break;
+            DenseSolver.Solve(_matrix, _rhs, _solution, Math.Abs);
+            if (CorrectDiodeStates() || iteration >= MaxDiodeIterations)
+                break;
         }
 
-        // Copy node voltages (index 0 stays 0 V).
-        for (int i = 1; i <= _nodeCount; i++) _nodeVoltage[i] = _x[i - 1];
-
-        // Element currents and state updates.
-        foreach (var e in _elements)
-        {
-            double va = V(e.NodeA), vb = V(e.NodeB), vd = va - vb;
-            switch (e.Kind)
-            {
-                case Kind.Resistor or Kind.Lamp:
-                    e.Current = vd / e.Value;
-                    break;
-
-                case Kind.Fuse:
-                    e.Current = e.FuseBlown ? vd * Gmin : vd / e.Value;
-                    if (!e.FuseBlown && Math.Abs(e.Current) > e.RatedCurrent)
-                    {
-                        e.FuseBlown = true;
-                        e.Current = 0;
-                    }
-                    break;
-
-                case Kind.Switch:
-                    e.Current = e.Symbol.StateOn ? vd / SwitchOnR : vd * Gmin;
-                    break;
-
-                case Kind.Capacitor:
-                {
-                    double g = e.Value / dt;
-                    e.Current = g * (vd - e.PrevVoltage);
-                    e.PrevVoltage = vd;
-                    break;
-                }
-
-                case Kind.Inductor:
-                    e.Current = _x[_nodeCount + e.Branch];
-                    e.PrevCurrent = e.Current;
-                    break;
-
-                case Kind.Diode:
-                    e.Current = e.DiodeOn ? (vd - DiodeVon) / DiodeRon : vd * Gmin;
-                    break;
-
-                case Kind.SourceDc or Kind.SourceAc:
-                    // Branch current flows out of the + terminal through the circuit.
-                    e.Current = -_x[_nodeCount + e.Branch];
-                    break;
-            }
-        }
+        foreach (Element e in _elements)
+            UpdateState(e, dt);
     }
-
-    private double V(int node) => node == 0 ? 0 : _x[node - 1];
 
     private void Assemble(double dt)
     {
-        Array.Clear(_a);
+        Array.Clear(_matrix);
         Array.Clear(_rhs);
 
-        // Gmin from every node to ground keeps floating subcircuits solvable.
-        for (int i = 0; i < _nodeCount; i++) _a[i, i] += Gmin;
+        for (int i = 0; i < _nodeCount; i++)
+            _matrix[i, i] += Gmin;
 
-        foreach (var e in _elements)
+        foreach (Element e in _elements)
         {
             switch (e.Kind)
             {
-                case Kind.Resistor or Kind.Lamp:
-                    StampConductance(e.NodeA, e.NodeB, 1.0 / e.Value);
+                case SymbolKind.Resistor or SymbolKind.Lamp:
+                    StampConductance(_matrix, e, 1.0 / e.Value);
                     break;
 
-                case Kind.Fuse:
-                    StampConductance(e.NodeA, e.NodeB, e.FuseBlown ? Gmin : 1.0 / e.Value);
+                case SymbolKind.Fuse:
+                    StampConductance(_matrix, e, e.FuseBlown ? Gmin : 1.0 / e.Value);
                     break;
 
-                case Kind.Switch:
-                    StampConductance(e.NodeA, e.NodeB, e.Symbol.StateOn ? 1.0 / SwitchOnR : Gmin);
+                case SymbolKind.Switch:
+                    StampConductance(_matrix, e, e.Symbol.StateOn ? 1.0 / SwitchOnResistance : Gmin);
                     break;
 
-                case Kind.Capacitor:
-                {
+                case SymbolKind.Capacitor:
                     double g = e.Value / dt;
-                    StampConductance(e.NodeA, e.NodeB, g);
-                    StampCurrent(e.NodeA, e.NodeB, g * e.PrevVoltage);
+                    StampConductance(_matrix, e, g);
+                    StampCurrent(e, g * e.PreviousVoltage);
                     break;
-                }
 
-                case Kind.Diode:
+                case SymbolKind.Diode:
                     if (e.DiodeOn)
                     {
-                        StampConductance(e.NodeA, e.NodeB, 1.0 / DiodeRon);
-                        StampCurrent(e.NodeA, e.NodeB, DiodeVon / DiodeRon);
+                        StampConductance(_matrix, e, 1.0 / DiodeRon);
+                        StampCurrent(e, DiodeVon / DiodeRon);
                     }
                     else
                     {
-                        StampConductance(e.NodeA, e.NodeB, Gmin);
+                        StampConductance(_matrix, e, Gmin);
                     }
                     break;
 
-                case Kind.Inductor:
-                {
-                    int k = _nodeCount + e.Branch;
-                    StampBranch(e.NodeA, e.NodeB, k);
-                    _a[k, k] -= e.Value / dt;
-                    _rhs[k] -= e.Value / dt * e.PrevCurrent;
+                case SymbolKind.Inductor:
+                    StampBranch(_matrix, e);
+                    _matrix[e.Branch, e.Branch] -= e.Value / dt;
+                    _rhs[e.Branch] -= e.Value / dt * e.PreviousCurrent;
                     break;
-                }
 
-                case Kind.SourceDc or Kind.SourceAc:
-                {
-                    int k = _nodeCount + e.Branch;
-                    StampBranch(e.NodeA, e.NodeB, k);
-                    _rhs[k] = e.Kind == Kind.SourceDc
-                        ? e.Value
-                        : e.Value * Math.Sin(2.0 * Math.PI * e.Frequency * Time);
+                case SymbolKind.DcSource:
+                    StampBranch(_matrix, e);
+                    _rhs[e.Branch] = e.Value;
                     break;
-                }
+
+                case SymbolKind.AcSource:
+                    StampBranch(_matrix, e);
+                    _rhs[e.Branch] = e.Value * Math.Sin(2.0 * Math.PI * e.Frequency * Time);
+                    break;
             }
         }
     }
 
-    private void StampConductance(int a, int b, double g)
+    // A conducting diode turns off when its current would be negative, a blocking one turns on
+    // above Von. True when no diode had to change.
+    private bool CorrectDiodeStates()
     {
-        if (a != 0) _a[a - 1, a - 1] += g;
-        if (b != 0) _a[b - 1, b - 1] += g;
-        if (a != 0 && b != 0)
+        bool consistent = true;
+        foreach (Element e in _elements)
         {
-            _a[a - 1, b - 1] -= g;
-            _a[b - 1, a - 1] -= g;
+            if (e.Kind != SymbolKind.Diode)
+                continue;
+            double v = Voltage(e);
+            if (e.DiodeOn ? v < DiodeVon : v > DiodeVon)
+            {
+                e.DiodeOn = !e.DiodeOn;
+                consistent = false;
+            }
+        }
+        return consistent;
+    }
+
+    private void UpdateState(Element e, double dt)
+    {
+        double v = Voltage(e);
+        switch (e.Kind)
+        {
+            case SymbolKind.Resistor or SymbolKind.Lamp:
+                e.Current = v / e.Value;
+                break;
+
+            case SymbolKind.Fuse:
+                e.Current = e.FuseBlown ? v * Gmin : v / e.Value;
+                if (!e.FuseBlown && Math.Abs(e.Current) > e.RatedCurrent)
+                {
+                    e.FuseBlown = true;
+                    e.Current = 0;
+                }
+                break;
+
+            case SymbolKind.Switch:
+                e.Current = e.Symbol.StateOn ? v / SwitchOnResistance : v * Gmin;
+                break;
+
+            case SymbolKind.Capacitor:
+                e.Current = e.Value / dt * (v - e.PreviousVoltage);
+                e.PreviousVoltage = v;
+                break;
+
+            case SymbolKind.Inductor:
+                e.Current = e.PreviousCurrent = _solution[e.Branch];
+                break;
+
+            case SymbolKind.Diode:
+                e.Current = e.DiodeOn ? (v - DiodeVon) / DiodeRon : v * Gmin;
+                break;
+
+            case SymbolKind.DcSource or SymbolKind.AcSource:
+                e.Current = -_solution[e.Branch];   // delivered: out of the + terminal into the circuit
+                break;
         }
     }
 
-    /// <summary>Current source injecting into node A and out of node B.</summary>
-    private void StampCurrent(int a, int b, double i)
+    private double Voltage(Element e) => GetNodeVoltage(e.NodeA) - GetNodeVoltage(e.NodeB);
+
+    /// <summary>A current source driving <paramref name="current"/> into node A and out of node B.</summary>
+    private void StampCurrent(Element e, double current)
     {
-        if (a != 0) _rhs[a - 1] += i;
-        if (b != 0) _rhs[b - 1] -= i;
+        if (e.NodeA != 0)
+            _rhs[e.NodeA - 1] += current;
+        if (e.NodeB != 0)
+            _rhs[e.NodeB - 1] -= current;
     }
 
-    /// <summary>KCL and KVL rows shared by voltage sources and inductors.</summary>
-    private void StampBranch(int a, int b, int k)
+    private static void StampConductance<T>(T[,] a, Element e, T g) where T : INumberBase<T>
     {
-        if (a != 0) { _a[a - 1, k] += 1; _a[k, a - 1] += 1; }
-        if (b != 0) { _a[b - 1, k] -= 1; _a[k, b - 1] -= 1; }
+        int ra = e.NodeA - 1, rb = e.NodeB - 1;   // ground, node 0, has no row
+        if (ra >= 0)
+            a[ra, ra] += g;
+        if (rb >= 0)
+            a[rb, rb] += g;
+        if (ra >= 0 && rb >= 0)
+        {
+            a[ra, rb] -= g;
+            a[rb, ra] -= g;
+        }
     }
 
-    /// <summary>Dense Gaussian elimination with partial pivoting.</summary>
-    private void Solve()
+    /// <summary>The KCL entries of a branch current and its KVL row, shared by sources and inductors.</summary>
+    private static void StampBranch<T>(T[,] a, Element e) where T : INumberBase<T>
     {
-        int n = _nodeCount + _branchCount;
-        // Work on copies so Assemble can rebuild cleanly next iteration.
-        var m = (double[,])_a.Clone();
-        var b = (double[])_rhs.Clone();
+        int k = e.Branch;
+        if (e.NodeA != 0)
+        {
+            a[e.NodeA - 1, k] += T.One;
+            a[k, e.NodeA - 1] += T.One;
+        }
+        if (e.NodeB != 0)
+        {
+            a[e.NodeB - 1, k] -= T.One;
+            a[k, e.NodeB - 1] -= T.One;
+        }
+    }
 
+    // ------------------------------------------------------------------ results
+
+    /// <summary>The MNA node of the net at a point (0 is ground), or null when there is no net.</summary>
+    public int? ResolveNode(Vec2 point) =>
+        _netlist.FindNetAt(point) is { } net && _nodeOf.TryGetValue(net, out int node) ? node : null;
+
+    public double GetNodeVoltage(int node) => node == 0 ? 0 : _solution[node - 1];
+
+    /// <summary>The voltage of the net at a point, or null when there is no net.</summary>
+    public double? GetVoltageAt(Vec2 point) => ResolveNode(point) is { } node ? GetNodeVoltage(node) : null;
+
+    /// <summary>
+    /// The current through a two-terminal symbol from pin 1 to pin 2; for a source the current it
+    /// delivers. Null for symbols that are not simulated.
+    /// </summary>
+    public double? GetCurrent(SymbolInstance symbol) => _elementOf.TryGetValue(symbol, out Element? e) ? e.Current : null;
+
+    /// <summary>A lamp's brightness, 0 to 1 at its rated power.</summary>
+    public double GetLampBrightness(SymbolInstance lamp)
+    {
+        if (!_elementOf.TryGetValue(lamp, out Element? e) || e.Kind != SymbolKind.Lamp)
+            return 0;
+        double v = Voltage(e);
+        return Math.Clamp(v * v / e.Value / e.RatedPower, 0, 1);
+    }
+
+    public bool IsFuseBlown(SymbolInstance fuse) => _elementOf.TryGetValue(fuse, out Element? e) && e.FuseBlown;
+
+    /// <summary>
+    /// Takes over the new value of a resistor, capacitor or inductor while the simulation runs: time
+    /// and state carry on. False when the symbol is not one of these or its value doesn't parse.
+    /// </summary>
+    public bool UpdateComponentValue(SymbolInstance symbol)
+    {
+        if (!_elementOf.TryGetValue(symbol, out Element? e) || e.Kind is not (SymbolKind.Resistor or SymbolKind.Capacitor or SymbolKind.Inductor))
+            return false;
+        if (!Units.TryParse(symbol.Value, out double value) || value <= 0)
+            return false;
+        e.Value = value;
+        return true;
+    }
+
+    // ------------------------------------------------------------------ AC analysis
+
+    /// <summary>
+    /// Small-signal analysis at one frequency, as SPICE's AC analysis: the same topology with complex
+    /// admittances, jωC for capacitors and jωL in the inductor branches. Nonlinear elements keep their
+    /// present state: a diode its segment, a switch its position, a fuse whether it has blown. AC
+    /// sources drive the circuit with their amplitude; DC sources become shorts, as superposition
+    /// demands. Gives the node voltages followed by the branch currents. Throws
+    /// InvalidOperationException for a singular circuit.
+    /// </summary>
+    public Complex[] SolveAc(double frequency)
+    {
+        int size = _rhs.Length;
+        var a = new Complex[size, size];
+        var rhs = new Complex[size];
+        var x = new Complex[size];
+        double w = 2.0 * Math.PI * frequency;
+
+        for (int i = 0; i < _nodeCount; i++)
+            a[i, i] += Gmin;
+
+        foreach (Element e in _elements)
+        {
+            switch (e.Kind)
+            {
+                case SymbolKind.Resistor or SymbolKind.Lamp:
+                    StampConductance(a, e, 1.0 / e.Value);
+                    break;
+
+                case SymbolKind.Fuse:
+                    StampConductance(a, e, e.FuseBlown ? Gmin : 1.0 / e.Value);
+                    break;
+
+                case SymbolKind.Switch:
+                    StampConductance(a, e, e.Symbol.StateOn ? 1.0 / SwitchOnResistance : Gmin);
+                    break;
+
+                case SymbolKind.Capacitor:
+                    StampConductance(a, e, new Complex(0, w * e.Value));
+                    break;
+
+                case SymbolKind.Diode:
+                    StampConductance(a, e, e.DiodeOn ? 1.0 / DiodeRon : Gmin);
+                    break;
+
+                case SymbolKind.Inductor:
+                    StampBranch(a, e);
+                    a[e.Branch, e.Branch] -= new Complex(0, w * e.Value);
+                    break;
+
+                case SymbolKind.DcSource:
+                    StampBranch(a, e);
+                    break;
+
+                case SymbolKind.AcSource:
+                    StampBranch(a, e);
+                    rhs[e.Branch] = e.Value;
+                    break;
+            }
+        }
+
+        DenseSolver.Solve(a, rhs, x, static c => c.Magnitude);
+        return x;
+    }
+
+    /// <summary>A node voltage from a <see cref="SolveAc"/> solution; node 0 is ground.</summary>
+    public static Complex GetAcNodeVoltage(Complex[] solution, int node) => node == 0 ? Complex.Zero : solution[node - 1];
+
+    /// <summary>
+    /// The frequency response of nodes: response[k][i] is the voltage of nodes[k] at frequencies[i].
+    /// Throws InvalidOperationException for a singular circuit.
+    /// </summary>
+    public Complex[][] SweepAc(IReadOnlyList<int> nodes, IReadOnlyList<double> frequencies)
+    {
+        Complex[][] response = [.. nodes.Select(_ => new Complex[frequencies.Count])];
+        for (int i = 0; i < frequencies.Count; i++)
+        {
+            Complex[] solution = SolveAc(frequencies[i]);
+            for (int k = 0; k < nodes.Count; k++)
+                response[k][i] = GetAcNodeVoltage(solution, nodes[k]);
+        }
+        return response;
+    }
+
+    /// <summary>Log-spaced frequencies from <paramref name="from"/> over whole decades, up to at least <paramref name="to"/>.</summary>
+    public static double[] LogFrequencies(double from, double to, int pointsPerDecade)
+    {
+        int count = (int)Math.Ceiling(Math.Log10(to / from)) * pointsPerDecade + 1;
+        return [.. Enumerable.Range(0, count).Select(i => from * Math.Pow(10, (double)i / pointsPerDecade))];
+    }
+}
+
+/// <summary>Dense Gaussian elimination with partial pivoting, for real and complex systems.</summary>
+file static class DenseSolver
+{
+    /// <summary>Solves a·x = b, overwriting a and b. Throws InvalidOperationException when a is singular.</summary>
+    public static void Solve<T>(T[,] a, T[] b, T[] x, Func<T, double> magnitude) where T : INumberBase<T>
+    {
+        int n = b.Length;
         for (int col = 0; col < n; col++)
         {
             int pivot = col;
-            double best = Math.Abs(m[col, col]);
+            double best = magnitude(a[col, col]);
             for (int r = col + 1; r < n; r++)
             {
-                double v = Math.Abs(m[r, col]);
-                if (v > best) { best = v; pivot = r; }
+                double m = magnitude(a[r, col]);
+                if (m > best)
+                {
+                    best = m;
+                    pivot = r;
+                }
             }
             if (best < 1e-14)
-                throw new InvalidOperationException("Singular matrix: circuit has no unique solution.");
+                throw new InvalidOperationException("Singular matrix: the circuit has no unique solution.");
 
             if (pivot != col)
             {
                 for (int c = col; c < n; c++)
-                    (m[col, c], m[pivot, c]) = (m[pivot, c], m[col, c]);
+                    (a[col, c], a[pivot, c]) = (a[pivot, c], a[col, c]);
                 (b[col], b[pivot]) = (b[pivot], b[col]);
             }
 
             for (int r = col + 1; r < n; r++)
             {
-                double f = m[r, col] / m[col, col];
-                if (f == 0) continue;
-                for (int c = col; c < n; c++) m[r, c] -= f * m[col, c];
+                T f = a[r, col] / a[col, col];
+                if (f == T.Zero)
+                    continue;
+                for (int c = col; c < n; c++)
+                    a[r, c] -= f * a[col, c];
                 b[r] -= f * b[col];
             }
         }
 
         for (int r = n - 1; r >= 0; r--)
         {
-            double sum = b[r];
-            for (int c = r + 1; c < n; c++) sum -= m[r, c] * _x[c];
-            _x[r] = sum / m[r, r];
-        }
-    }
-
-    /// <summary>Resolve the MNA node index that owns the given point (0 = ground), or null.</summary>
-    public int? ResolveNode(Vec2 point) => _netlist.FindNetAt(point) is { } net && _netNode.TryGetValue(net, out int node) ? node : null;
-
-    public double GetNodeVoltage(int node) => node == 0 ? 0.0 : _nodeVoltage[node];
-
-    /// <summary>Voltage of the net that owns the given point, or null.</summary>
-    public double? GetVoltageAt(Vec2 point) => ResolveNode(point) is { } node ? GetNodeVoltage(node) : null;
-
-    /// <summary>Current through a two-terminal symbol (pin 1 → pin 2 positive), or null.</summary>
-    public double? GetCurrent(SymbolInstance sym) => _bySymbolId.TryGetValue(sym.Id, out var e) ? e.Current : null;
-
-    /// <summary>Lamp brightness 0..1 (rated power → 1).</summary>
-    public double GetLampBrightness(SymbolInstance lamp)
-    {
-        if (!_bySymbolId.TryGetValue(lamp.Id, out var e) || e.Kind != Kind.Lamp) return 0;
-        double v = V(e.NodeA) - V(e.NodeB);
-        double power = v * v / e.Value;
-        return Math.Clamp(power / e.RatedPower, 0, 1);
-    }
-
-    public bool IsFuseBlown(SymbolInstance fuse) => _bySymbolId.TryGetValue(fuse.Id, out var e) && e.FuseBlown;
-
-    /// <summary>
-    /// Small-signal frequency-domain solve (SPICE-style AC analysis) at a single frequency.
-    /// The same MNA topology is stamped with complex immittances: jwC for capacitors, jwL for
-    /// inductor branches. Nonlinear elements are linearized around their present state: diodes
-    /// use their current on/off segment, switches their current position. AC sources drive the
-    /// circuit with their amplitude; DC sources become shorts (their branch equation with a
-    /// zero right-hand side), exactly as a linear superposition analysis expects.
-    /// Returns node voltages followed by branch currents, or throws on a singular matrix.
-    /// </summary>
-    public Complex[] SolveAc(double frequency)
-    {
-        int n = _nodeCount + _branchCount;
-        Complex[,] a = new Complex[n, n];
-        Complex[] rhs = new Complex[n];
-        double w = 2.0 * Math.PI * frequency;
-
-        for (int i = 0; i < _nodeCount; i++)
-        {
-            a[i, i] += Gmin;
-        }
-
-        void StampG(int na, int nb, Complex g)
-        {
-            if (na != 0) { a[na - 1, na - 1] += g; }
-            if (nb != 0) { a[nb - 1, nb - 1] += g; }
-            if (na != 0 && nb != 0)
-            {
-                a[na - 1, nb - 1] -= g;
-                a[nb - 1, na - 1] -= g;
-            }
-        }
-
-        void StampBranchRows(int na, int nb, int k)
-        {
-            if (na != 0) { a[na - 1, k] += 1; a[k, na - 1] += 1; }
-            if (nb != 0) { a[nb - 1, k] -= 1; a[k, nb - 1] -= 1; }
-        }
-
-        foreach (Element e in _elements)
-        {
-            switch (e.Kind)
-            {
-                case Kind.Resistor or Kind.Lamp:
-                    StampG(e.NodeA, e.NodeB, 1.0 / e.Value);
-                    break;
-
-                case Kind.Fuse:
-                    StampG(e.NodeA, e.NodeB, e.FuseBlown ? Gmin : 1.0 / e.Value);
-                    break;
-
-                case Kind.Switch:
-                    StampG(e.NodeA, e.NodeB, e.Symbol.StateOn ? 1.0 / SwitchOnR : Gmin);
-                    break;
-
-                case Kind.Capacitor:
-                    StampG(e.NodeA, e.NodeB, new Complex(0, w * e.Value));
-                    break;
-
-                case Kind.Diode:
-                    StampG(e.NodeA, e.NodeB, e.DiodeOn ? 1.0 / DiodeRon : Gmin);
-                    break;
-
-                case Kind.Inductor:
-                {
-                    int k = _nodeCount + e.Branch;
-                    StampBranchRows(e.NodeA, e.NodeB, k);
-                    a[k, k] -= new Complex(0, w * e.Value);
-                    break;
-                }
-
-                case Kind.SourceDc or Kind.SourceAc:
-                {
-                    int k = _nodeCount + e.Branch;
-                    StampBranchRows(e.NodeA, e.NodeB, k);
-                    rhs[k] = e.Kind == Kind.SourceAc ? e.Value : Complex.Zero;
-                    break;
-                }
-            }
-        }
-
-        // Complex Gaussian elimination with partial pivoting by magnitude.
-        Complex[] x = new Complex[n];
-        for (int col = 0; col < n; col++)
-        {
-            int pivot = col;
-            double best = a[col, col].Magnitude;
-            for (int r = col + 1; r < n; r++)
-            {
-                double v = a[r, col].Magnitude;
-                if (v > best) { best = v; pivot = r; }
-            }
-            if (best < 1e-14)
-            {
-                throw new InvalidOperationException("Singular matrix: AC analysis has no unique solution.");
-            }
-
-            if (pivot != col)
-            {
-                for (int c = col; c < n; c++) { (a[col, c], a[pivot, c]) = (a[pivot, c], a[col, c]); }
-                (rhs[col], rhs[pivot]) = (rhs[pivot], rhs[col]);
-            }
-
-            for (int r = col + 1; r < n; r++)
-            {
-                Complex f = a[r, col] / a[col, col];
-                if (f == Complex.Zero) { continue; }
-                for (int c = col; c < n; c++) { a[r, c] -= f * a[col, c]; }
-                rhs[r] -= f * rhs[col];
-            }
-        }
-
-        for (int r = n - 1; r >= 0; r--)
-        {
-            Complex sum = rhs[r];
-            for (int c = r + 1; c < n; c++) { sum -= a[r, c] * x[c]; }
+            T sum = b[r];
+            for (int c = r + 1; c < n; c++)
+                sum -= a[r, c] * x[c];
             x[r] = sum / a[r, r];
         }
-
-        return x;
     }
-
-    /// <summary>
-    /// Re-parse the value of a live component (R, C, L) while the simulation runs, without a
-    /// rebuild - reactive state and time carry straight through the change. Returns false when
-    /// the symbol is not simulated, is of an unsupported kind, or its value does not parse.
-    /// </summary>
-    public bool UpdateComponentValue(SymbolInstance sym)
-    {
-        if (!_bySymbolId.TryGetValue(sym.Id, out Element? e)) { return false; }
-        if (e.Kind is not (Kind.Resistor or Kind.Capacitor or Kind.Inductor)) { return false; }
-        if (!Units.TryParse(sym.Value, out double parsed) || parsed <= 0) { return false; }
-        e.Value = parsed;
-        return true;
-    }
-
-    /// <summary>Node voltage phasor from a <see cref="SolveAc"/> solution (node 0 is ground).</summary>
-    public Complex GetAcNodeVoltage(Complex[] solution, int node) => node == 0 ? Complex.Zero : solution[node - 1];
-
-    /// <summary>Convenience: complex voltage at a point for one frequency, or null when the point hits no net.</summary>
-    public Complex? GetAcVoltageAt(double frequency, Vec2 point) => ResolveNode(point) is { } node ? GetAcNodeVoltage(SolveAc(frequency), node) : null;
-
 }

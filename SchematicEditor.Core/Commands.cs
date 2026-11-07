@@ -1,14 +1,16 @@
 namespace SchematicEditor.Core;
 
-/// <summary>An undoable document mutation (command pattern).</summary>
+/// <summary>An undoable edit of a document.</summary>
 public interface IEditCommand
 {
+    /// <summary>What the command does, as a short phrase: "Move", "Delete".</summary>
     string Name { get; }
+
     void Execute(SchematicDocument doc);
     void Undo(SchematicDocument doc);
 }
 
-/// <summary>Classic undo/redo stack. Every mutation must go through Push.</summary>
+/// <summary>Undo and redo history. Every edit of the document goes through <see cref="Push"/>.</summary>
 public sealed class UndoStack(SchematicDocument doc)
 {
     private readonly Stack<IEditCommand> _undo = [];
@@ -16,147 +18,169 @@ public sealed class UndoStack(SchematicDocument doc)
 
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
-    public string? UndoName => _undo.Count > 0 ? _undo.Peek().Name : null;
+    public string? UndoName => _undo.TryPeek(out IEditCommand? command) ? command.Name : null;
+    public string? RedoName => _redo.TryPeek(out IEditCommand? command) ? command.Name : null;
 
-    /// <summary>Execute a command and record it. Clears the redo stack.</summary>
-    public void Push(IEditCommand cmd)
+    /// <summary>Executes and records a command; the redo history is dropped.</summary>
+    public void Push(IEditCommand command)
     {
-        cmd.Execute(doc);
-        _undo.Push(cmd);
+        command.Execute(doc);
+        _undo.Push(command);
         _redo.Clear();
         doc.NotifyChanged();
     }
 
     public void Undo()
     {
-        if (_undo.Count == 0) return;
-        var cmd = _undo.Pop();
-        cmd.Undo(doc);
-        _redo.Push(cmd);
+        if (!_undo.TryPop(out IEditCommand? command))
+            return;
+        command.Undo(doc);
+        _redo.Push(command);
         doc.NotifyChanged();
     }
 
     public void Redo()
     {
-        if (_redo.Count == 0) return;
-        var cmd = _redo.Pop();
-        cmd.Execute(doc);
-        _undo.Push(cmd);
+        if (!_redo.TryPop(out IEditCommand? command))
+            return;
+        command.Execute(doc);
+        _undo.Push(command);
         doc.NotifyChanged();
-    }
-
-    public void Clear()
-    {
-        _undo.Clear();
-        _redo.Clear();
     }
 }
 
-public sealed class AddElementCommand(SchematicElement element, string? name = null) : IEditCommand
+/// <summary>Adds an element on top; a symbol whose reference designator ends in '?' gets the next free number.</summary>
+public sealed class AddElementCommand(SchematicElement element) : IEditCommand
 {
-    public string Name { get; } = name ?? "Add " + element.GetType().Name;
+    public string Name => element is SymbolInstance s ? "Place " + s.Definition.Name : "Draw wire";
 
     public void Execute(SchematicDocument doc)
     {
-        doc.AddElement(element);
-        if (element is SymbolInstance s && s.RefDes.EndsWith('?'))
-            s.RefDes = doc.NextRefDes(s.Definition.RefPrefix);
+        doc.Add(element);
+        if (element is SymbolInstance symbol && symbol.RefDes.EndsWith('?'))
+            symbol.RefDes = doc.NextRefDes(symbol.Definition.RefPrefix);
     }
 
-    public void Undo(SchematicDocument doc) => doc.RemoveElement(element);
+    public void Undo(SchematicDocument doc) => doc.Remove(element);
 }
 
+/// <summary>Deletes elements; undo puts each back where it was in the stacking order.</summary>
 public sealed class DeleteElementsCommand(IEnumerable<SchematicElement> elements) : IEditCommand
 {
-    private readonly List<SchematicElement> _elements = [.. elements];
+    private readonly SchematicElement[] _elements = [.. elements];
+    private readonly List<(int Index, SchematicElement Element)> _removed = [];
+
     public string Name => "Delete";
 
     public void Execute(SchematicDocument doc)
     {
-        foreach (var e in _elements) doc.RemoveElement(e);
+        _removed.Clear();
+        foreach (SchematicElement element in _elements)
+        {
+            int index = doc.Remove(element);
+            if (index >= 0)
+                _removed.Add((index, element));
+        }
     }
 
     public void Undo(SchematicDocument doc)
     {
-        foreach (var e in _elements) doc.AddElement(e);
+        for (int i = _removed.Count - 1; i >= 0; i--)
+            doc.Add(_removed[i].Element, _removed[i].Index);
     }
 }
 
 public sealed class MoveElementsCommand(IEnumerable<SchematicElement> elements, Vec2 delta) : IEditCommand
 {
-    private readonly List<SchematicElement> _elements = [.. elements];
+    private readonly SchematicElement[] _elements = [.. elements];
+
     public string Name => "Move";
 
     public void Execute(SchematicDocument doc) => Shift(delta);
-    public void Undo(SchematicDocument doc) => Shift(new Vec2(-delta.X, -delta.Y));
+    public void Undo(SchematicDocument doc) => Shift(-delta);
 
     private void Shift(Vec2 d)
     {
-        foreach (var e in _elements)
+        foreach (SchematicElement element in _elements)
         {
-            switch (e)
+            switch (element)
             {
                 case SymbolInstance s:
                     s.Position += d;
                     break;
                 case Wire w:
-                    for (int i = 0; i < w.Points.Count; i++) w.Points[i] += d;
+                    for (int i = 0; i < w.Points.Count; i++)
+                        w.Points[i] += d;
                     break;
             }
         }
     }
 }
 
-public sealed class RotateSymbolCommand(SymbolInstance symbol) : IEditCommand
+/// <summary>Turns each symbol a quarter turn clockwise about its own origin.</summary>
+public sealed class RotateSymbolsCommand(IEnumerable<SymbolInstance> symbols) : IEditCommand
 {
+    private readonly SymbolInstance[] _symbols = [.. symbols];
+
     public string Name => "Rotate";
-
-    public void Execute(SchematicDocument doc) =>
-        symbol.Rotation = (Rotation)(((int)symbol.Rotation + 1) & 3);
-
-    public void Undo(SchematicDocument doc) =>
-        symbol.Rotation = (Rotation)(((int)symbol.Rotation + 3) & 3);
-}
-
-public sealed class MirrorSymbolCommand(SymbolInstance symbol) : IEditCommand
-{
-    public string Name => "Mirror";
-
-    public void Execute(SchematicDocument doc) => symbol.Mirror = !symbol.Mirror;
-    public void Undo(SchematicDocument doc) => symbol.Mirror = !symbol.Mirror;
-}
-
-public sealed class SetPropertyCommand(SymbolInstance symbol, bool isValue, string newText) : IEditCommand
-{
-    private string _oldText = "";
-    public string Name { get; } = isValue ? "Set value" : "Set refdes";
 
     public void Execute(SchematicDocument doc)
     {
-        if (isValue) { _oldText = symbol.Value; symbol.Value = newText; }
-        else { _oldText = symbol.RefDes; symbol.RefDes = newText; }
+        foreach (SymbolInstance s in _symbols)
+            s.Rotation = s.Rotation.Next;
     }
 
     public void Undo(SchematicDocument doc)
     {
-        if (isValue) symbol.Value = _oldText;
-        else symbol.RefDes = _oldText;
+        foreach (SymbolInstance s in _symbols)
+            s.Rotation = s.Rotation.Previous;
     }
 }
 
-/// <summary>Groups several commands into one undo step (e.g. paste).</summary>
+public sealed class MirrorSymbolsCommand(IEnumerable<SymbolInstance> symbols) : IEditCommand
+{
+    private readonly SymbolInstance[] _symbols = [.. symbols];
+
+    public string Name => "Mirror";
+
+    public void Execute(SchematicDocument doc) => Flip();
+    public void Undo(SchematicDocument doc) => Flip();
+
+    private void Flip()
+    {
+        foreach (SymbolInstance s in _symbols)
+            s.Mirror = !s.Mirror;
+    }
+}
+
+/// <summary>Sets a symbol's reference designator and value.</summary>
+public sealed class EditSymbolCommand(SymbolInstance symbol, string refDes, string value) : IEditCommand
+{
+    private readonly string _oldRefDes = symbol.RefDes;
+    private readonly string _oldValue = symbol.Value;
+
+    public string Name => "Edit properties";
+
+    public void Execute(SchematicDocument doc) => (symbol.RefDes, symbol.Value) = (refDes, value);
+    public void Undo(SchematicDocument doc) => (symbol.RefDes, symbol.Value) = (_oldRefDes, _oldValue);
+}
+
+/// <summary>Several commands as one undo step (e.g. paste).</summary>
 public sealed class CompositeCommand(string name, IEnumerable<IEditCommand> commands) : IEditCommand
 {
-    private readonly List<IEditCommand> _commands = [.. commands];
+    private readonly IEditCommand[] _commands = [.. commands];
+
     public string Name { get; } = name;
 
     public void Execute(SchematicDocument doc)
     {
-        foreach (var c in _commands) c.Execute(doc);
+        foreach (IEditCommand command in _commands)
+            command.Execute(doc);
     }
 
     public void Undo(SchematicDocument doc)
     {
-        for (int i = _commands.Count - 1; i >= 0; i--) _commands[i].Undo(doc);
+        for (int i = _commands.Length - 1; i >= 0; i--)
+            _commands[i].Undo(doc);
     }
 }
